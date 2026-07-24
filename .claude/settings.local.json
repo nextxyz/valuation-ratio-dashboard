@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import yfinance, flask, pandas; print\\('yfinance', yfinance.__version__\\); print\\('flask', flask.__version__\\); print\\('pandas', pandas.__version__\\)\")",
+      "Bash(.venv/bin/python --version)",
+      "Bash(.venv/bin/python3 *)",
+      "Bash(curl -s http://127.0.0.1:5000/ -o /dev/null -w \"index.html status: %{http_code}\\\\n\")",
+      "Bash(curl -s http://127.0.0.1:5000/api/ratios/AAPL)",
+      "Bash(curl -s http://127.0.0.1:5000/api/ratios/NOTATICKERXYZ -w \"\\\\nstatus:%{http_code}\\\\n\")",
+      "Bash(pkill -f \"app.py\")",
+      "Bash(sqlite3 cache.sqlite3 \".mode column\" \".headers on\" \"SELECT ticker,date,kind,price,net_income,fetched_at FROM ratio_snapshots;\")",
+      "Bash(sqlite3 cache.sqlite3 \".mode column\" \".headers on\" \"SELECT * FROM ticker_meta;\")",
+      "Bash(chmod +x *)",
+      "Bash(./run.sh)",
+      "Bash(curl -s http://127.0.0.1:5000/ -o /dev/null -w \"status: %{http_code}\\\\n\")",
+      "Bash(sudo -n firewall-cmd --state)",
+      "Bash(sudo -n firewall-cmd --list-ports)",
+      "Bash(sudo -n firewall-cmd --list-services)"
+    ]
+  }
+}

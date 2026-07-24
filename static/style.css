@@ -1,0 +1,226 @@
+:root {
+  --surface: #ffffff;
+  --surface-alt: #f5f6f8;
+  --text-primary: #1a1d22;
+  --text-secondary: #4b5058;
+  --text-muted: #8a8f98;
+  --grid-line: #e4e6ea;
+  --accent: #2f6fed;
+  --border: #dde1e6;
+  --danger: #d13c3c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #14161a;
+    --surface-alt: #1c1f24;
+    --text-primary: #eceef1;
+    --text-secondary: #b7bcc4;
+    --text-muted: #767c86;
+    --grid-line: #2a2e35;
+    --accent: #6ea8fe;
+    --border: #2e323a;
+    --danger: #ff6b6b;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", Pretendard, Roboto, sans-serif;
+  background: var(--surface);
+  color: var(--text-primary);
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.ticker-form {
+  display: flex;
+  gap: 8px;
+}
+
+#ticker-input {
+  width: 260px;
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--text-primary);
+}
+
+#ticker-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.ticker-form button {
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.ticker-form button:hover {
+  filter: brightness(1.08);
+}
+
+main {
+  padding: 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.status {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.status.error {
+  color: var(--danger);
+}
+
+.charts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.chart-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  background: var(--surface);
+}
+
+.chart-card h3 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.chart-card .subtitle {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.chart-svg {
+  width: 100%;
+  height: 180px;
+  overflow: visible;
+}
+
+.chart-svg .grid-line {
+  stroke: var(--grid-line);
+  stroke-width: 1;
+}
+
+.chart-svg .axis-label {
+  fill: var(--text-muted);
+  font-size: 10px;
+}
+
+.chart-svg .value-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chart-svg .value-dot {
+  fill: var(--accent);
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
+.chart-svg .hit-area {
+  fill: transparent;
+  cursor: pointer;
+}
+
+.chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 180px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.tooltip {
+  position: fixed;
+  pointer-events: none;
+  background: var(--text-primary);
+  color: var(--surface);
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  transform: translate(-50%, calc(-100% - 10px));
+  z-index: 10;
+  visibility: hidden;
+}
+
+.table-section {
+  margin-top: 32px;
+}
+
+.table-section h2 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  min-width: 640px;
+}
+
+th,
+td {
+  padding: 8px 12px;
+  text-align: right;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+
+th:first-child,
+td:first-child {
+  text-align: left;
+}
+
+th {
+  color: var(--text-secondary);
+  font-weight: 600;
+  background: var(--surface-alt);
+}

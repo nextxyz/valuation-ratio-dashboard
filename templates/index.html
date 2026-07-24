@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Valuation Ratio Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Valuation Ratio Dashboard</h1>
+    <form id="ticker-form" class="ticker-form">
+      <input
+        id="ticker-input"
+        type="text"
+        placeholder="티커 입력 (예: AAPL, MSFT, 005930.KS)"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <button type="submit">조회</button>
+    </form>
+  </header>
+
+  <main>
+    <p id="status" class="status" hidden></p>
+    <section id="charts" class="charts-grid" hidden></section>
+    <section id="table-section" class="table-section" hidden>
+      <h2>원본 데이터</h2>
+      <div class="table-wrap">
+        <table id="data-table"></table>
+      </div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='main.js') }}"></script>
+</body>
+</html>
