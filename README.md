@@ -41,9 +41,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> 참고: 코드에서 `numpy`를 직접 사용하므로 함께 설치되어야 합니다.
-> `pandas`의 의존성으로 대부분 자동 설치되지만, 문제가 있으면 `pip install numpy`를 별도로 실행하세요.
-
 ## 실행
 
 ### 로컬 개발 (기본)
