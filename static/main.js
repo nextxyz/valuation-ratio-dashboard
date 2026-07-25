@@ -75,12 +75,14 @@ function renderCharts(data) {
   chartsEl.innerHTML = "";
   const labels = data.dates.map(toQuarterLabel);
 
+  const label = data.display || data.ticker;
+
   METRIC_DEFS.forEach((def) => {
     const card = document.createElement("div");
     card.className = "chart-card";
 
     const h3 = document.createElement("h3");
-    h3.textContent = `${data.ticker} · ${def.title}`;
+    h3.textContent = `${label} · ${def.title}`;
     const subtitle = document.createElement("p");
     subtitle.className = "subtitle";
     subtitle.textContent = def.subtitle;

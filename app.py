@@ -2,6 +2,7 @@ import math
 
 from flask import Flask, jsonify, render_template
 
+import tickers
 from ratios import METRICS, get_ratio_history
 
 app = Flask(__name__)
@@ -18,19 +19,24 @@ def index():
     return render_template("index.html")
 
 
-@app.route("/api/ratios/<ticker>")
+@app.route("/api/ratios/<path:ticker>")
 def api_ratios(ticker):
-    ticker = ticker.strip().upper()
     try:
-        df, cache_info = get_ratio_history(ticker, years=3)
+        yf_ticker, display = tickers.resolve(ticker)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+    try:
+        df, cache_info = get_ratio_history(yf_ticker, years=3)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
     if df.empty:
-        return jsonify({"error": f"'{ticker}'에 대한 데이터가 부족합니다."}), 400
+        return jsonify({"error": f"'{yf_ticker}'에 대한 데이터가 부족합니다."}), 400
 
     payload = {
-        "ticker": ticker,
+        "ticker": yf_ticker,
+        "display": display or yf_ticker,
         "dates": [d.strftime("%Y-%m-%d") for d in df["date"]],
         "metrics": {m: [_clean(v) for v in df[m]] for m in METRICS},
         "cache_info": cache_info,

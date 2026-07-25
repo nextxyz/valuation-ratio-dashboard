@@ -39,6 +39,22 @@ def init_db():
                 ttm_fetched_at TEXT
             )
         """)
+        # 한글 종목명 <-> 코드 매핑 (KRX 상장 목록)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS stock_map (
+                code TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                market TEXT NOT NULL,
+                name_norm TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_stock_map_name_norm ON stock_map(name_norm)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS kv_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
         conn.commit()
     finally:
         conn.close()
@@ -98,6 +114,92 @@ def upsert_snapshot(ticker, date_str, kind, raw, fetched_at):
             values,
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_kv(key):
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT value FROM kv_meta WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+    finally:
+        conn.close()
+
+
+def set_kv(key, value):
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO kv_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def replace_stock_map(rows, fetched_at):
+    """상장 목록 전체를 교체한다. rows: [(code, name, market, name_norm), ...]"""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM stock_map")
+        conn.executemany(
+            "INSERT OR REPLACE INTO stock_map (code, name, market, name_norm) VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        conn.execute(
+            "INSERT INTO kv_meta (key, value) VALUES ('stock_map_fetched_at', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (fetched_at,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def stock_map_count():
+    conn = get_connection()
+    try:
+        return conn.execute("SELECT COUNT(*) AS n FROM stock_map").fetchone()["n"]
+    finally:
+        conn.close()
+
+
+def find_stock_by_name(name_norm):
+    """정규화된 이름과 정확히 일치하는 종목."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT code, name, market FROM stock_map WHERE name_norm = ? ORDER BY market",
+            (name_norm,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def find_stock_by_code(code):
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT code, name, market FROM stock_map WHERE code = ?", (code,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def search_stock_by_name(name_norm, limit=8):
+    """정규화된 이름을 부분 포함하는 후보(정확 일치 실패 시 안내용)."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT code, name, market FROM stock_map WHERE name_norm LIKE ? ORDER BY LENGTH(name), name LIMIT ?",
+            (f"%{name_norm}%", limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 

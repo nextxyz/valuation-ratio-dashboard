@@ -352,8 +352,13 @@ def compute_ratios(ticker_symbol, years=3):
 if __name__ == "__main__":
     import sys
 
-    ticker = sys.argv[1] if len(sys.argv) > 1 else "AAPL"
+    import tickers
+
+    query = sys.argv[1] if len(sys.argv) > 1 else "AAPL"
+    ticker, display = tickers.resolve(query)
     result, info = get_ratio_history(ticker)
     pd.set_option("display.width", 160)
+    if display:
+        print(f"{query} -> {ticker} ({display})")
     print(f"cache_info: {info}")
     print(result[["date", "price"] + METRICS])
