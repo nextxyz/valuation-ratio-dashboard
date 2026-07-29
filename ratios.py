@@ -96,13 +96,15 @@ def _trailing_dividends(dividends, date):
 def _tax_rate(income, date):
     """실효세율. 'Tax Rate For Calcs'가 없으면 Tax Provision/Pretax Income으로 계산."""
     rate = _val(_get_row(income, "tax_rate"), date)
-    if not np.isnan(rate):
-        return rate
-    tax = _val(_get_row(income, "tax_provision"), date)
-    pretax = _val(_get_row(income, "pretax_income"), date)
-    if np.isnan(tax) or np.isnan(pretax) or pretax == 0:
-        return np.nan
-    return tax / pretax
+    if np.isnan(rate):
+        tax = _val(_get_row(income, "tax_provision"), date)
+        pretax = _val(_get_row(income, "pretax_income"), date)
+        if np.isnan(tax) or np.isnan(pretax) or pretax == 0:
+            return np.nan
+        rate = tax / pretax
+    # 적자인데 세금이 잡히는 등 비정상 구간에서 세율이 음수/100% 초과가 되면
+    # NOPAT = EBIT x (1-세율) 이 과대·역전 계상되므로 [0, 1]로 클램프한다.
+    return min(max(float(rate), 0.0), 1.0)
 
 
 def _snapshot(date, income, balance, cashflow, prices, dividends):
@@ -320,10 +322,14 @@ def _derive_ratios(rows):
     # 예: 순이익 -200 / 자기자본 -500 -> ROE +40% 로 우량주처럼 보인다.
     equity_pos = df["equity"].where(df["equity"] > 0)
 
+    # EV가 0 이하(순현금 > 시총+부채인 넷넷주)면 EV 기반 지표는 부호가 뒤집혀 의미가 반대가 된다.
+    # 예: EBIT +60 / EV -200 -> 이익수익률 -30% 로, 극단적 저평가 기업이 최악처럼 보인다.
+    ev_pos = df["ev"].where(df["ev"] > 0)
+
     df["PER"] = df["market_cap"] / df["net_income"]
     df["PBR"] = df["market_cap"] / equity_pos
     df["PSR"] = df["market_cap"] / df["revenue"]
-    df["EV_EBITDA"] = df["ev"] / df["ebitda"]
+    df["EV_EBITDA"] = ev_pos / df["ebitda"]
     df["DividendYield"] = df["div_ttm"] / df["price"] * 100
     df["FCFYield"] = df["fcf"] / df["market_cap"] * 100
 
@@ -337,7 +343,7 @@ def _derive_ratios(rows):
     df["OperatingMargin"] = df["ebit"] / df["revenue"] * 100
     df["DebtEquity"] = df["total_debt"] / equity_pos * 100
 
-    earnings_yield = df["ebit"] / df["ev"] * 100  # 그린블랏 방식 이익수익률 (EBIT/EV)
+    earnings_yield = df["ebit"] / ev_pos * 100  # 그린블랏 방식 이익수익률 (EBIT/EV)
     df["MagicFormula"] = df["ROIC"] + earnings_yield  # 그린블랏 마법공식 = ROIC + 이익수익률
 
     # 그레이엄 넘버는 EPS와 BPS가 '각각' 양수여야 한다. 곱만 검사하면 둘 다 음수인
