@@ -11,6 +11,11 @@ RAW_COLUMNS = [
     "total_debt", "ebit", "invested_capital", "nopat",
 ]
 
+# RAW_COLUMNS에 새 컬럼을 추가할 때마다 이 값을 1 증가시킨다.
+# ticker_meta.schema_version이 이보다 낮은 티커는 TTL과 무관하게 강제로 다시 조회되어
+# 새로 추가된 컬럼값이 채워진다 (그 전까지 캐시된 row는 새 컬럼이 NULL이라 관련 지표가 비게 됨).
+SCHEMA_VERSION = 1
+
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -44,14 +49,16 @@ def init_db():
                 ticker TEXT PRIMARY KEY,
                 annual_fetched_at TEXT,
                 ttm_fetched_at TEXT,
-                company_name TEXT
+                company_name TEXT,
+                schema_version INTEGER
             )
         """)
-        try:
-            conn.execute("ALTER TABLE ticker_meta ADD COLUMN company_name TEXT")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass  # 기존 DB에 이미 컬럼이 있으면 무시 (예전 버전 DB 마이그레이션)
+        for col, coltype in [("company_name", "TEXT"), ("schema_version", "INTEGER")]:
+            try:
+                conn.execute(f"ALTER TABLE ticker_meta ADD COLUMN {col} {coltype}")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # 기존 DB에 이미 컬럼이 있으면 무시 (예전 버전 DB 마이그레이션)
         # 한글 종목명 <-> 코드 매핑 (KRX 상장 목록)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS stock_map (
@@ -77,34 +84,40 @@ def get_meta(ticker):
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT annual_fetched_at, ttm_fetched_at, company_name FROM ticker_meta WHERE ticker = ?",
+            "SELECT annual_fetched_at, ttm_fetched_at, company_name, schema_version FROM ticker_meta WHERE ticker = ?",
             (ticker,),
         ).fetchone()
-        return dict(row) if row else {"annual_fetched_at": None, "ttm_fetched_at": None, "company_name": None}
+        if not row:
+            return {"annual_fetched_at": None, "ttm_fetched_at": None, "company_name": None, "schema_version": 0}
+        d = dict(row)
+        d["schema_version"] = d["schema_version"] or 0  # 예전 DB(컬럼 추가 전)는 0으로 취급 -> 항상 최신 스키마보다 낮음
+        return d
     finally:
         conn.close()
 
 
-def touch_meta(ticker, annual_fetched_at=None, ttm_fetched_at=None, company_name=None):
+def touch_meta(ticker, annual_fetched_at=None, ttm_fetched_at=None, company_name=None, schema_version=None):
     conn = get_connection()
     try:
         existing = conn.execute(
-            "SELECT annual_fetched_at, ttm_fetched_at, company_name FROM ticker_meta WHERE ticker = ?",
+            "SELECT annual_fetched_at, ttm_fetched_at, company_name, schema_version FROM ticker_meta WHERE ticker = ?",
             (ticker,),
         ).fetchone()
         new_annual = annual_fetched_at if annual_fetched_at is not None else (existing["annual_fetched_at"] if existing else None)
         new_ttm = ttm_fetched_at if ttm_fetched_at is not None else (existing["ttm_fetched_at"] if existing else None)
         new_name = company_name if company_name is not None else (existing["company_name"] if existing else None)
+        new_schema = schema_version if schema_version is not None else (existing["schema_version"] if existing else None)
         conn.execute(
             """
-            INSERT INTO ticker_meta (ticker, annual_fetched_at, ttm_fetched_at, company_name)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO ticker_meta (ticker, annual_fetched_at, ttm_fetched_at, company_name, schema_version)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(ticker) DO UPDATE SET
                 annual_fetched_at = excluded.annual_fetched_at,
                 ttm_fetched_at = excluded.ttm_fetched_at,
-                company_name = excluded.company_name
+                company_name = excluded.company_name,
+                schema_version = excluded.schema_version
             """,
-            (ticker, new_annual, new_ttm, new_name),
+            (ticker, new_annual, new_ttm, new_name, new_schema),
         )
         conn.commit()
     finally:

@@ -14,6 +14,9 @@
 - TTM은 (ticker, date) 로 저장되므로 분기가 바뀔 때마다 새 날짜의 row가 "추가"되고
   이전 분기의 TTM은 과거 데이터로 그대로 남는다 -> 시간이 지날수록 yfinance가 한 번에
   주는 것보다 더 긴 분기별 이력이 DB에 쌓인다.
+- db.SCHEMA_VERSION: RAW_COLUMNS에 새 지표용 컬럼을 추가할 때마다 이 값을 올려야 한다.
+  안 그러면 이미 캐시된 티커는 새 컬럼이 NULL인 채로 TTL이 지날 때까지(최대 30일) 남아있어
+  새로 추가한 지표가 계속 비어 보인다.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -342,9 +345,10 @@ def get_ratio_history(ticker_symbol, years=3, force_refresh=False):
     annual_at = _parse_ts(meta["annual_fetched_at"])
     ttm_at = _parse_ts(meta["ttm_fetched_at"])
     company_name = meta["company_name"]
+    schema_outdated = meta["schema_version"] < db.SCHEMA_VERSION
 
-    need_annual = force_refresh or annual_at is None or (now - annual_at) > ANNUAL_TTL
-    need_ttm = force_refresh or ttm_at is None or (now - ttm_at) > TTM_TTL
+    need_annual = force_refresh or annual_at is None or (now - annual_at) > ANNUAL_TTL or schema_outdated
+    need_ttm = force_refresh or ttm_at is None or (now - ttm_at) > TTM_TTL or schema_outdated
     need_name = not company_name
 
     existing_rows = db.fetch_snapshots(ticker_symbol)
@@ -377,7 +381,7 @@ def get_ratio_history(ticker_symbol, years=3, force_refresh=False):
                     for d in fiscal_dates:
                         raw = _snapshot(d, income, balance, cashflow, prices, dividends)
                         db.upsert_snapshot(ticker_symbol, d.strftime("%Y-%m-%d"), "annual", raw, fetched_at_str)
-                    db.touch_meta(ticker_symbol, annual_fetched_at=fetched_at_str)
+                    db.touch_meta(ticker_symbol, annual_fetched_at=fetched_at_str, schema_version=db.SCHEMA_VERSION)
                     cache_info["annual"] = "fetched"
 
                 if need_ttm:
@@ -386,7 +390,7 @@ def get_ratio_history(ticker_symbol, years=3, force_refresh=False):
                     q_cashflow = t.quarterly_cashflow
                     for ttm in _ttm_snapshots(q_income, q_balance, q_cashflow, prices, dividends):
                         db.upsert_snapshot(ticker_symbol, ttm["date"].strftime("%Y-%m-%d"), "ttm", ttm, fetched_at_str)
-                    db.touch_meta(ticker_symbol, ttm_fetched_at=fetched_at_str)
+                    db.touch_meta(ticker_symbol, ttm_fetched_at=fetched_at_str, schema_version=db.SCHEMA_VERSION)
                     cache_info["ttm"] = "fetched"
 
             except Exception:
