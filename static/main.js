@@ -6,6 +6,12 @@ const METRIC_DEFS = [
   { key: "EV_EBITDA", title: "EV/EBITDA", subtitle: "기업가치 / EBITDA (배)", unit: "x" },
   { key: "DividendYield", title: "Dividend Yield", subtitle: "연간배당금 / 주가", unit: "%" },
   { key: "FCFYield", title: "FCF Yield", subtitle: "잉여현금흐름 / 시가총액", unit: "%" },
+  { key: "ROE", title: "ROE", subtitle: "자기자본이익률 (순이익/자기자본)", unit: "%" },
+  { key: "ROIC", title: "ROIC", subtitle: "투하자본이익률 (세후영업이익/투하자본)", unit: "%" },
+  { key: "OperatingMargin", title: "영업이익률", subtitle: "영업이익/매출액", unit: "%" },
+  { key: "DebtEquity", title: "부채비율 (D/E)", subtitle: "부채/자기자본", unit: "%" },
+  { key: "MagicFormula", title: "그린블랏 마법공식", subtitle: "ROIC + 이익수익률(EBIT/EV)", unit: "%" },
+  { key: "GrahamNumber", title: "그레이엄 넘버", subtitle: "sqrt(22.5 × EPS × BPS)", unit: "" },
 ];
 
 const form = document.getElementById("ticker-form");

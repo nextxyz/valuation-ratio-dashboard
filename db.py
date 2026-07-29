@@ -8,6 +8,7 @@ DB_PATH = Path(__file__).parent / "cache.sqlite3"
 RAW_COLUMNS = [
     "price", "revenue", "net_income", "equity", "shares",
     "ebitda", "fcf", "market_cap", "ev", "div_ttm",
+    "total_debt", "ebit", "invested_capital", "nopat",
 ]
 
 
@@ -32,6 +33,12 @@ def init_db():
                 PRIMARY KEY (ticker, date)
             )
         """)
+        for col in RAW_COLUMNS:
+            try:
+                conn.execute(f"ALTER TABLE ratio_snapshots ADD COLUMN {col} REAL")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # 기존 DB에 이미 컬럼이 있으면 무시 (구버전 DB 마이그레이션)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS ticker_meta (
                 ticker TEXT PRIMARY KEY,

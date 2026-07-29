@@ -41,9 +41,16 @@ ROW_ALIASES = {
     "fcf": ["Free Cash Flow"],
     "op_cashflow": ["Operating Cash Flow"],
     "capex": ["Capital Expenditure"],
+    "invested_capital": ["Invested Capital"],
+    "tax_rate": ["Tax Rate For Calcs"],
+    "tax_provision": ["Tax Provision"],
+    "pretax_income": ["Pretax Income"],
 }
 
-METRICS = ["PER", "PBR", "PSR", "PEG", "EV_EBITDA", "DividendYield", "FCFYield"]
+METRICS = [
+    "PER", "PBR", "PSR", "PEG", "EV_EBITDA", "DividendYield", "FCFYield",
+    "ROE", "ROIC", "OperatingMargin", "DebtEquity", "MagicFormula", "GrahamNumber",
+]
 
 
 def _get_row(df, key):
@@ -82,6 +89,18 @@ def _trailing_dividends(dividends, date):
     return float(window.sum())
 
 
+def _tax_rate(income, date):
+    """실효세율. 'Tax Rate For Calcs'가 없으면 Tax Provision/Pretax Income으로 계산."""
+    rate = _val(_get_row(income, "tax_rate"), date)
+    if not np.isnan(rate):
+        return rate
+    tax = _val(_get_row(income, "tax_provision"), date)
+    pretax = _val(_get_row(income, "pretax_income"), date)
+    if np.isnan(tax) or np.isnan(pretax) or pretax == 0:
+        return np.nan
+    return tax / pretax
+
+
 def _snapshot(date, income, balance, cashflow, prices, dividends):
     """특정 시점(회계연도 말 등)의 재무 스냅샷 -> raw 값 dict."""
     revenue = _val(_get_row(income, "revenue"), date)
@@ -89,16 +108,21 @@ def _snapshot(date, income, balance, cashflow, prices, dividends):
     equity = _val(_get_row(balance, "equity"), date)
     total_debt = _val(_get_row(balance, "total_debt"), date, 0.0)
     cash = _val(_get_row(balance, "cash"), date, 0.0)
+    invested_capital = _val(_get_row(balance, "invested_capital"), date)
 
     shares = _val(_get_row(balance, "shares"), date)
     if np.isnan(shares):
         shares = _val(_get_row(income, "shares_fallback"), date)
 
+    ebit = _val(_get_row(income, "ebit"), date)
+
     ebitda = _val(_get_row(income, "ebitda"), date)
     if np.isnan(ebitda):
-        ebit = _val(_get_row(income, "ebit"), date)
         dep = _val(_get_row(income, "dep_amort"), date, 0.0)
         ebitda = ebit + dep if not np.isnan(ebit) else np.nan
+
+    tax_rate = _tax_rate(income, date)
+    nopat = ebit * (1 - tax_rate) if not np.isnan(ebit) and not np.isnan(tax_rate) else np.nan
 
     fcf = _val(_get_row(cashflow, "fcf"), date)
     if np.isnan(fcf):
@@ -123,6 +147,10 @@ def _snapshot(date, income, balance, cashflow, prices, dividends):
         "market_cap": market_cap,
         "ev": ev,
         "div_ttm": div_ttm,
+        "total_debt": total_debt,
+        "ebit": ebit,
+        "invested_capital": invested_capital,
+        "nopat": nopat,
     }
 
 
@@ -157,12 +185,24 @@ def _ttm_snapshots(q_income, q_balance, q_cashflow, prices, dividends):
 
         revenue = ttm_sum(_get_row(q_income, "revenue"))
         net_income = ttm_sum(_get_row(q_income, "net_income"))
+        ebit = ttm_sum(_get_row(q_income, "ebit"))
 
         ebitda = ttm_sum(_get_row(q_income, "ebitda"))
         if np.isnan(ebitda):
-            ebit = ttm_sum(_get_row(q_income, "ebit"))
             dep = ttm_sum(_get_row(q_income, "dep_amort"))
             ebitda = ebit + (dep if not np.isnan(dep) else 0.0) if not np.isnan(ebit) else np.nan
+
+        # 세율은 분기마다 다르므로, EBIT을 먼저 합산한 뒤 평균세율을 곱하지 않고
+        # 분기별로 세후영업이익을 구한 다음 그 값들을 합산한다.
+        nopat = 0.0
+        for c in window:
+            ebit_row = _get_row(q_income, "ebit")
+            ebit_q = ebit_row.get(c) if ebit_row is not None else None
+            tax_rate_q = _tax_rate(q_income, c)
+            if ebit_q is None or (isinstance(ebit_q, float) and np.isnan(ebit_q)) or np.isnan(tax_rate_q):
+                nopat = np.nan
+                break
+            nopat += ebit_q * (1 - tax_rate_q)
 
         fcf = ttm_sum(_get_row(q_cashflow, "fcf"))
         if np.isnan(fcf):
@@ -173,6 +213,7 @@ def _ttm_snapshots(q_income, q_balance, q_cashflow, prices, dividends):
         equity = _val(_get_row(q_balance, "equity"), date)
         total_debt = _val(_get_row(q_balance, "total_debt"), date, 0.0)
         cash = _val(_get_row(q_balance, "cash"), date, 0.0)
+        invested_capital = _val(_get_row(q_balance, "invested_capital"), date)
         shares = _val(_get_row(q_balance, "shares"), date)
         if np.isnan(shares):
             shares = _val(_get_row(q_income, "shares_fallback"), date)
@@ -194,6 +235,10 @@ def _ttm_snapshots(q_income, q_balance, q_cashflow, prices, dividends):
             "market_cap": market_cap,
             "ev": ev,
             "div_ttm": div_ttm,
+            "total_debt": total_debt,
+            "ebit": ebit,
+            "invested_capital": invested_capital,
+            "nopat": nopat,
         })
 
     return results
@@ -250,6 +295,18 @@ def _derive_ratios(rows):
     peg = df["PER"] / eps_growth_pct
     peg[(eps_growth_pct <= 0)] = np.nan  # 이익이 역성장/적자면 PEG는 의미 없음
     df["PEG"] = peg
+
+    df["ROE"] = df["net_income"] / df["equity"] * 100
+    df["ROIC"] = df["nopat"] / df["invested_capital"] * 100
+    df["OperatingMargin"] = df["ebit"] / df["revenue"] * 100
+    df["DebtEquity"] = df["total_debt"] / df["equity"] * 100
+
+    earnings_yield = df["ebit"] / df["ev"] * 100  # 그린블랏 방식 이익수익률 (EBIT/EV)
+    df["MagicFormula"] = df["ROIC"] + earnings_yield  # 그린블랏 마법공식 = ROIC + 이익수익률
+
+    bps = df["equity"] / df["shares"]
+    graham_product = 22.5 * df["eps"] * bps
+    df["GrahamNumber"] = np.sqrt(graham_product.where(graham_product >= 0))
 
     for col in METRICS:
         df[col] = df[col].replace([np.inf, -np.inf], np.nan)

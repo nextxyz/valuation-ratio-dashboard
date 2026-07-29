@@ -1,23 +1,30 @@
 # Valuation Ratio Dashboard
 
-미국·한국 주식 티커를 입력하면 최근 3년간의 주요 밸류에이션 비율(PER, PBR, PSR, PEG, EV/EBITDA, 배당수익률, FCF수익률) 추이를 차트와 표로 보여주는 Flask 웹 대시보드입니다.
+미국·한국 주식 티커를 입력하면 최근 3년간의 밸류에이션·수익성 지표 13종 추이를 차트와 표로 보여주는 Flask 웹 대시보드입니다.
 
-데이터는 [yfinance](https://github.com/ranaroussi/yfinance)에서 가져오고, 원본 재무 수치를 SQLite에 캐시해 반복 조회 시 네트워크 호출을 최소화합니다.
+데이터는 [yfinance](https://github.com/ranaroussi/yfinance)(Yahoo Finance)에서 가져오고, 원본 재무 수치를 SQLite에 캐시해 반복 조회 시 네트워크 호출을 최소화합니다.
 
 ## 주요 기능
 
 - **티커 조회**: `AAPL`, `MSFT` 등 yfinance가 지원하는 티커를 입력해 조회
 - **한글 종목명 · 6자리 코드 자동 변환**: `삼성전자`, `에코프로비엠`처럼 한글로 입력하거나 `005930`처럼 6자리 코드만 입력하면 yfinance 티커(`005930.KS` / `247540.KQ`)로 자동 변환. 코스피는 `.KS`, 코스닥은 `.KQ`를 시장 구분에 따라 자동으로 붙임 (매핑 데이터: FinanceDataReader / KRX)
-- **7가지 밸류에이션 비율** 시각화
+- **회사명 표시**: 대시보드 상단에 회사명을 표시합니다. 한글 종목은 KRX 상장 목록에서, 해외 종목은 Yahoo Finance(`longName`/`shortName`)에서 가져오며 한 번 확인되면 DB에 영구 캐시됩니다.
+- **13가지 밸류에이션·수익성 지표** 시각화
   | 지표 | 의미 | 계산식 |
   |------|------|--------|
   | PER | 주가수익비율 | 시가총액 / 순이익 |
   | PBR | 주가순자산비율 | 시가총액 / 자기자본 |
   | PSR | 주가매출비율 | 시가총액 / 매출 |
-  | PEG | PER 대비 이익성장률 | PER / EPS 성장률(%) |
+  | PEG | PER 대비 이익성장률 | PER / EPS 성장률(%, 1년 전 대비) |
   | EV/EBITDA | 기업가치 / EBITDA | (시총 + 순부채) / EBITDA |
   | Dividend Yield | 배당수익률(%) | 최근 12개월 배당 / 주가 |
   | FCF Yield | 잉여현금흐름 수익률(%) | FCF / 시가총액 |
+  | ROE | 자기자본이익률(%) | 순이익 / 자기자본 |
+  | ROIC | 투하자본이익률(%) | 세후영업이익(NOPAT) / 투하자본 |
+  | 영업이익률 | 영업이익률(%) | 영업이익(EBIT) / 매출액 |
+  | 부채비율 (D/E) | 부채비율(%) | 부채(Total Debt) / 자기자본 |
+  | 그린블랏 마법공식 | Magic Formula | ROIC + 이익수익률(EBIT/EV, 둘 다 %) |
+  | 그레이엄 넘버 | Graham Number | √(22.5 × EPS × BPS) |
 - **의존성 없는 순수 SVG 차트**: 프론트엔드는 외부 라이브러리 없이 바닐라 JS로 라인 차트를 그림
 - **SQLite 캐싱**: 원본 재무 수치(raw)만 저장하고 비율은 매번 재계산 → 계산식이 바뀌어도 캐시 재활용 가능
 - **TTM 이력 누적**: 분기가 지날 때마다 새로운 TTM(최근 12개월) 스냅샷이 DB에 쌓여, 시간이 지날수록 분기별 이력이 촘촘해짐
@@ -101,14 +108,20 @@ python ratios.py 삼성전자   # 한글명도 가능 -> 005930.KS 로 자동 �
     "PEG": [null, 0.4, null],
     "EV_EBITDA": [7.7, 3.3, 7.5],
     "DividendYield": [1.9, 2.7, 1.3],
-    "FCFYield": [-3.6, 6.2, 4.1]
+    "FCFYield": [-3.6, 6.2, 4.1],
+    "ROE": [4.1, 8.6, 10.4],
+    "ROIC": [2.5, 8.7, 11.0],
+    "OperatingMargin": [4.6, 12.8, 16.0],
+    "DebtEquity": [3.6, 4.9, 5.9],
+    "MagicFormula": [5.6, 22.7, 18.0],
+    "GrahamNumber": [56813.2, 91638.2, 98043.7]
   },
   "cache_info": { "annual": "cache", "ttm": "fetched" }
 }
 ```
 
-- `ticker`는 변환된 yfinance 티커, `display`는 사람이 읽기 좋은 이름(한글명이 아니면 티커와 동일)입니다.
-- 값이 계산 불가(적자, 데이터 부족 등)면 `null`로 반환됩니다.
+- `ticker`는 변환된 yfinance 티커, `display`는 사람이 읽기 좋은 이름입니다. 한글 종목은 KRX 상장명, 해외 종목은 Yahoo Finance 회사명(`"Apple Inc. (AAPL)"`)이 자동으로 채워지며, 둘 다 없으면 티커 자체가 들어갑니다.
+- 값이 계산 불가(적자, 데이터 부족 등)면 `null`로 반환됩니다. 특히 은행·금융주처럼 손익계산서에 `EBIT`/영업이익 항목이 없는 업종은 `ROIC`, `OperatingMargin`, `MagicFormula`가 구조적으로 `null`이 됩니다(그린블랏 마법공식도 원래 금융주를 제외하고 계산하는 방식이라 자연스러운 결과입니다).
 - `cache_info`의 각 값은 `cache`(캐시 사용) / `fetched`(새로 조회) / `cache(stale)`(조회 실패로 오래된 캐시 폴백) 중 하나입니다.
 - 종목명이 정확히 일치하지 않으면 `400`과 함께 후보 목록을 담은 `{"error": "..."}`를 반환합니다.
 
@@ -150,6 +163,8 @@ valuation-ratio-dashboard/
 - yfinance 무료 소스는 연간 재무제표 4~5개, 분기 재무제표 4~5개 정도만 제공합니다. 따라서 초기에는 데이터 포인트가 성깁니다.
 - 앱을 계속 사용하면 새 분기 TTM 스냅샷이 DB에 누적되어 시간이 지날수록 이력이 촘촘해집니다.
 - PEG는 EPS가 역성장하거나 적자인 구간에서는 의미가 없어 `null`로 처리됩니다.
+- **투하자본(Invested Capital)**은 yfinance가 제공하는 값(`Total Debt + Stockholders Equity`)을 그대로 사용합니다.
+- **세후영업이익(NOPAT)**은 분기별로 세율이 다르므로, TTM 구간은 분기마다 `EBIT × (1 - 그 분기의 실효세율)`을 구해 4개 분기를 합산합니다(EBIT을 먼저 합산한 뒤 평균세율을 곱하는 방식보다 정확함). 실효세율은 `Tax Rate For Calcs`를 우선 쓰고 없으면 `Tax Provision / Pretax Income`으로 계산합니다.
 
 ## 라이선스
 
