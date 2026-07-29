@@ -36,9 +36,15 @@ def init_db():
             CREATE TABLE IF NOT EXISTS ticker_meta (
                 ticker TEXT PRIMARY KEY,
                 annual_fetched_at TEXT,
-                ttm_fetched_at TEXT
+                ttm_fetched_at TEXT,
+                company_name TEXT
             )
         """)
+        try:
+            conn.execute("ALTER TABLE ticker_meta ADD COLUMN company_name TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # 기존 DB에 이미 컬럼이 있으면 무시 (예전 버전 DB 마이그레이션)
         # 한글 종목명 <-> 코드 매핑 (KRX 상장 목록)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS stock_map (
@@ -64,32 +70,34 @@ def get_meta(ticker):
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT annual_fetched_at, ttm_fetched_at FROM ticker_meta WHERE ticker = ?",
+            "SELECT annual_fetched_at, ttm_fetched_at, company_name FROM ticker_meta WHERE ticker = ?",
             (ticker,),
         ).fetchone()
-        return dict(row) if row else {"annual_fetched_at": None, "ttm_fetched_at": None}
+        return dict(row) if row else {"annual_fetched_at": None, "ttm_fetched_at": None, "company_name": None}
     finally:
         conn.close()
 
 
-def touch_meta(ticker, annual_fetched_at=None, ttm_fetched_at=None):
+def touch_meta(ticker, annual_fetched_at=None, ttm_fetched_at=None, company_name=None):
     conn = get_connection()
     try:
         existing = conn.execute(
-            "SELECT annual_fetched_at, ttm_fetched_at FROM ticker_meta WHERE ticker = ?",
+            "SELECT annual_fetched_at, ttm_fetched_at, company_name FROM ticker_meta WHERE ticker = ?",
             (ticker,),
         ).fetchone()
         new_annual = annual_fetched_at if annual_fetched_at is not None else (existing["annual_fetched_at"] if existing else None)
         new_ttm = ttm_fetched_at if ttm_fetched_at is not None else (existing["ttm_fetched_at"] if existing else None)
+        new_name = company_name if company_name is not None else (existing["company_name"] if existing else None)
         conn.execute(
             """
-            INSERT INTO ticker_meta (ticker, annual_fetched_at, ttm_fetched_at)
-            VALUES (?, ?, ?)
+            INSERT INTO ticker_meta (ticker, annual_fetched_at, ttm_fetched_at, company_name)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(ticker) DO UPDATE SET
                 annual_fetched_at = excluded.annual_fetched_at,
-                ttm_fetched_at = excluded.ttm_fetched_at
+                ttm_fetched_at = excluded.ttm_fetched_at,
+                company_name = excluded.company_name
             """,
-            (ticker, new_annual, new_ttm),
+            (ticker, new_annual, new_ttm, new_name),
         )
         conn.commit()
     finally:

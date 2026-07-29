@@ -27,12 +27,15 @@ def api_ratios(ticker):
         return jsonify({"error": str(e)}), 400
 
     try:
-        df, cache_info = get_ratio_history(yf_ticker, years=3)
+        df, cache_info, company_name = get_ratio_history(yf_ticker, years=3)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
     if df.empty:
         return jsonify({"error": f"'{yf_ticker}'에 대한 데이터가 부족합니다."}), 400
+
+    if not display and company_name:
+        display = f"{company_name} ({yf_ticker})"
 
     payload = {
         "ticker": yf_ticker,

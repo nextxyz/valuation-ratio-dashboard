@@ -10,6 +10,7 @@ const METRIC_DEFS = [
 
 const form = document.getElementById("ticker-form");
 const input = document.getElementById("ticker-input");
+const companyNameEl = document.getElementById("company-name");
 const statusEl = document.getElementById("status");
 const chartsEl = document.getElementById("charts");
 const tableSection = document.getElementById("table-section");
@@ -30,6 +31,7 @@ form.addEventListener("submit", (e) => {
 
 async function loadTicker(ticker) {
   setStatus(`"${ticker}" 데이터를 불러오는 중...`, false);
+  companyNameEl.hidden = true;
   chartsEl.hidden = true;
   tableSection.hidden = true;
 
@@ -37,6 +39,9 @@ async function loadTicker(ticker) {
     const res = await fetch(`/api/ratios/${encodeURIComponent(ticker)}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "데이터를 불러오지 못했습니다.");
+
+    companyNameEl.textContent = data.display || data.ticker;
+    companyNameEl.hidden = false;
 
     setStatus(describeCacheInfo(data.cache_info), false);
     renderCharts(data);
@@ -50,8 +55,8 @@ async function loadTicker(ticker) {
 
 const CACHE_LABEL = {
   cache: "DB 캐시",
-  fetched: "yfinance 새로 조회",
-  "cache(stale)": "DB 캐시(오래됨, 조회 실패로 폴백)",
+  fetched: "Yahoo Finance에서 새로 조회",
+  "cache(stale)": "DB 캐시(오래됨, Yahoo Finance 조회 실패로 폴백)",
 };
 
 function describeCacheInfo(cacheInfo) {

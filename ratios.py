@@ -261,11 +261,22 @@ def _parse_ts(s):
     return datetime.fromisoformat(s) if s else None
 
 
-def get_ratio_history(ticker_symbol, years=3, force_refresh=False):
-    """DB 캐시를 우선 사용하고, 캐시가 없거나 TTL이 지난 부분만 yfinance에서 새로 받아온다.
+def _fetch_company_name(t):
+    """Yahoo Finance에서 회사명(longName/shortName)을 가져온다. 실패하면 None."""
+    try:
+        info = t.info
+    except Exception:
+        return None
+    if not info:
+        return None
+    return info.get("longName") or info.get("shortName")
 
-    Returns: (DataFrame, cache_info dict) — cache_info는 {"annual": ..., "ttm": ...}
-    각 값은 "cache" | "fetched" | "cache(stale)" 중 하나.
+
+def get_ratio_history(ticker_symbol, years=3, force_refresh=False):
+    """DB 캐시를 우선 사용하고, 캐시가 없거나 TTL이 지난 부분만 Yahoo Finance(yfinance)에서 새로 받아온다.
+
+    Returns: (DataFrame, cache_info dict, company_name) — cache_info는 {"annual": ..., "ttm": ...}
+    각 값은 "cache" | "fetched" | "cache(stale)" 중 하나. company_name은 없으면 None.
     """
     ticker_symbol = ticker_symbol.strip().upper()
     now = _now()
@@ -273,55 +284,65 @@ def get_ratio_history(ticker_symbol, years=3, force_refresh=False):
     meta = db.get_meta(ticker_symbol)
     annual_at = _parse_ts(meta["annual_fetched_at"])
     ttm_at = _parse_ts(meta["ttm_fetched_at"])
+    company_name = meta["company_name"]
 
     need_annual = force_refresh or annual_at is None or (now - annual_at) > ANNUAL_TTL
     need_ttm = force_refresh or ttm_at is None or (now - ttm_at) > TTM_TTL
+    need_name = not company_name
 
     existing_rows = db.fetch_snapshots(ticker_symbol)
     cache_info = {"annual": "cache", "ttm": "cache"}
 
-    if need_annual or need_ttm:
-        try:
-            t = yf.Ticker(ticker_symbol)
-            hist = t.history(period=f"{years + 2}y")
-            if hist.empty:
-                raise ValueError(f"'{ticker_symbol}' 가격 데이터를 가져올 수 없습니다. 티커를 확인하세요.")
+    if need_annual or need_ttm or need_name:
+        t = yf.Ticker(ticker_symbol)
 
-            prices = hist["Close"]
-            prices.index = [_to_naive(d) for d in prices.index]
+        if need_annual or need_ttm:
+            try:
+                hist = t.history(period=f"{years + 2}y")
+                if hist.empty:
+                    raise ValueError(f"'{ticker_symbol}' 가격 데이터를 가져올 수 없습니다. 티커를 확인하세요.")
 
-            dividends = t.dividends
-            if dividends is not None and not dividends.empty:
-                dividends = dividends.copy()
-                dividends.index = [_to_naive(d) for d in dividends.index]
+                prices = hist["Close"]
+                prices.index = [_to_naive(d) for d in prices.index]
 
-            fetched_at_str = now.isoformat()
+                dividends = t.dividends
+                if dividends is not None and not dividends.empty:
+                    dividends = dividends.copy()
+                    dividends.index = [_to_naive(d) for d in dividends.index]
 
-            if need_annual:
-                income, balance, cashflow = t.income_stmt, t.balance_sheet, t.cashflow
-                if income is None or income.empty:
-                    raise ValueError(f"'{ticker_symbol}' 재무제표 데이터를 가져올 수 없습니다.")
-                fiscal_dates = sorted(pd.Timestamp(c) for c in income.columns)
-                for d in fiscal_dates:
-                    raw = _snapshot(d, income, balance, cashflow, prices, dividends)
-                    db.upsert_snapshot(ticker_symbol, d.strftime("%Y-%m-%d"), "annual", raw, fetched_at_str)
-                db.touch_meta(ticker_symbol, annual_fetched_at=fetched_at_str)
-                cache_info["annual"] = "fetched"
+                fetched_at_str = now.isoformat()
 
-            if need_ttm:
-                q_income = t.quarterly_income_stmt
-                q_balance = t.quarterly_balance_sheet
-                q_cashflow = t.quarterly_cashflow
-                for ttm in _ttm_snapshots(q_income, q_balance, q_cashflow, prices, dividends):
-                    db.upsert_snapshot(ticker_symbol, ttm["date"].strftime("%Y-%m-%d"), "ttm", ttm, fetched_at_str)
-                db.touch_meta(ticker_symbol, ttm_fetched_at=fetched_at_str)
-                cache_info["ttm"] = "fetched"
+                if need_annual:
+                    income, balance, cashflow = t.income_stmt, t.balance_sheet, t.cashflow
+                    if income is None or income.empty:
+                        raise ValueError(f"'{ticker_symbol}' 재무제표 데이터를 가져올 수 없습니다.")
+                    fiscal_dates = sorted(pd.Timestamp(c) for c in income.columns)
+                    for d in fiscal_dates:
+                        raw = _snapshot(d, income, balance, cashflow, prices, dividends)
+                        db.upsert_snapshot(ticker_symbol, d.strftime("%Y-%m-%d"), "annual", raw, fetched_at_str)
+                    db.touch_meta(ticker_symbol, annual_fetched_at=fetched_at_str)
+                    cache_info["annual"] = "fetched"
 
-        except Exception:
-            if not existing_rows:
-                raise
-            # yfinance 호출 실패(네트워크 등) -> 캐시된 값으로 폴백
-            cache_info = {"annual": "cache(stale)", "ttm": "cache(stale)"}
+                if need_ttm:
+                    q_income = t.quarterly_income_stmt
+                    q_balance = t.quarterly_balance_sheet
+                    q_cashflow = t.quarterly_cashflow
+                    for ttm in _ttm_snapshots(q_income, q_balance, q_cashflow, prices, dividends):
+                        db.upsert_snapshot(ticker_symbol, ttm["date"].strftime("%Y-%m-%d"), "ttm", ttm, fetched_at_str)
+                    db.touch_meta(ticker_symbol, ttm_fetched_at=fetched_at_str)
+                    cache_info["ttm"] = "fetched"
+
+            except Exception:
+                if not existing_rows:
+                    raise
+                # Yahoo Finance 호출 실패(네트워크 등) -> 캐시된 값으로 폴백
+                cache_info = {"annual": "cache(stale)", "ttm": "cache(stale)"}
+
+        if need_name:
+            fetched_name = _fetch_company_name(t)
+            if fetched_name:
+                company_name = fetched_name
+                db.touch_meta(ticker_symbol, company_name=company_name)
 
     all_cached = db.fetch_snapshots(ticker_symbol)
     if not all_cached:
@@ -336,7 +357,7 @@ def get_ratio_history(ticker_symbol, years=3, force_refresh=False):
     cutoff = pd.Timestamp.now().normalize() - pd.DateOffset(years=years)
     df = df[df["date"] >= cutoff].reset_index(drop=True)
 
-    return df, cache_info
+    return df, cache_info, company_name
 
 
 def _now():
@@ -345,7 +366,7 @@ def _now():
 
 def compute_ratios(ticker_symbol, years=3):
     """캐시 정보 없이 DataFrame만 필요할 때 쓰는 얇은 wrapper (CLI 등)."""
-    df, _ = get_ratio_history(ticker_symbol, years=years)
+    df, _, _ = get_ratio_history(ticker_symbol, years=years)
     return df
 
 
@@ -356,9 +377,8 @@ if __name__ == "__main__":
 
     query = sys.argv[1] if len(sys.argv) > 1 else "AAPL"
     ticker, display = tickers.resolve(query)
-    result, info = get_ratio_history(ticker)
+    result, info, company_name = get_ratio_history(ticker)
     pd.set_option("display.width", 160)
-    if display:
-        print(f"{query} -> {ticker} ({display})")
+    print(f"{query} -> {ticker} ({display or company_name})")
     print(f"cache_info: {info}")
     print(result[["date", "price"] + METRICS])
