@@ -48,6 +48,7 @@ ROW_ALIASES = {
     "tax_rate": ["Tax Rate For Calcs"],
     "tax_provision": ["Tax Provision"],
     "pretax_income": ["Pretax Income"],
+    "diluted_eps": ["Diluted EPS", "Basic EPS"],
 }
 
 METRICS = [
@@ -109,8 +110,9 @@ def _snapshot(date, income, balance, cashflow, prices, dividends):
     revenue = _val(_get_row(income, "revenue"), date)
     net_income = _val(_get_row(income, "net_income"), date)
     equity = _val(_get_row(balance, "equity"), date)
-    total_debt = _val(_get_row(balance, "total_debt"), date, 0.0)
-    cash = _val(_get_row(balance, "cash"), date, 0.0)
+    # 항목이 아예 없으면 0이 아니라 NaN으로 둔다 (데이터 누락을 '무부채/무현금'으로 단정하지 않음)
+    total_debt = _val(_get_row(balance, "total_debt"), date)
+    cash = _val(_get_row(balance, "cash"), date)
     invested_capital = _val(_get_row(balance, "invested_capital"), date)
 
     shares = _val(_get_row(balance, "shares"), date)
@@ -118,6 +120,7 @@ def _snapshot(date, income, balance, cashflow, prices, dividends):
         shares = _val(_get_row(income, "shares_fallback"), date)
 
     ebit = _val(_get_row(income, "ebit"), date)
+    diluted_eps = _val(_get_row(income, "diluted_eps"), date)
 
     ebitda = _val(_get_row(income, "ebitda"), date)
     if np.isnan(ebitda):
@@ -154,16 +157,22 @@ def _snapshot(date, income, balance, cashflow, prices, dividends):
         "ebit": ebit,
         "invested_capital": invested_capital,
         "nopat": nopat,
+        "diluted_eps": diluted_eps,
     }
 
 
-def _ttm_snapshots(q_income, q_balance, q_cashflow, prices, dividends):
+def _ttm_snapshots(q_income, q_balance, q_cashflow, prices, dividends, skip_dates=frozenset()):
     """분기 재무제표로 계산 가능한 모든 TTM(최근 12개월) 스냅샷 목록.
 
     Yahoo/yfinance는 보통 분기 데이터를 최근 4~5개 분기까지만 제공하므로,
     4개 분기 윈도우를 만들 수 있는 시점마다(최근 데이터면 보통 1~2개) TTM row를 만든다.
     분기가 지날 때마다 이 함수가 새 날짜의 TTM을 하나씩 더 만들어내고, 그게 DB에 누적되면서
     시간이 지날수록 분기별 이력이 촘촘해진다.
+
+    skip_dates: 이 날짜의 TTM은 만들지 않는다. 12월 결산 기업처럼 회계연도말이 분기말과
+    겹치면 TTM 종료일이 연간 결산일과 같아지는데, 그러면 (ticker, date)가 같아서 감사받은
+    연간 수치가 4개 분기 단순합으로 덮어써진다(삼성전자 EBIT 기준 6.6% 차이). 연간 수치를
+    정본으로 보고 그 날짜는 건너뛴다.
     """
     rev_row = _get_row(q_income, "revenue")
     if rev_row is None:
@@ -177,6 +186,8 @@ def _ttm_snapshots(q_income, q_balance, q_cashflow, prices, dividends):
     for i in range(3, len(quarter_dates)):
         window = quarter_dates[i - 3 : i + 1]
         date = window[-1]
+        if date.strftime("%Y-%m-%d") in skip_dates:
+            continue
 
         def ttm_sum(row, window=window):
             if row is None:
@@ -189,6 +200,7 @@ def _ttm_snapshots(q_income, q_balance, q_cashflow, prices, dividends):
         revenue = ttm_sum(_get_row(q_income, "revenue"))
         net_income = ttm_sum(_get_row(q_income, "net_income"))
         ebit = ttm_sum(_get_row(q_income, "ebit"))
+        diluted_eps = ttm_sum(_get_row(q_income, "diluted_eps"))  # TTM EPS = 최근 4개 분기 EPS 합
 
         ebitda = ttm_sum(_get_row(q_income, "ebitda"))
         if np.isnan(ebitda):
@@ -214,8 +226,8 @@ def _ttm_snapshots(q_income, q_balance, q_cashflow, prices, dividends):
             fcf = ocf + (capex if not np.isnan(capex) else 0.0) if not np.isnan(ocf) else np.nan
 
         equity = _val(_get_row(q_balance, "equity"), date)
-        total_debt = _val(_get_row(q_balance, "total_debt"), date, 0.0)
-        cash = _val(_get_row(q_balance, "cash"), date, 0.0)
+        total_debt = _val(_get_row(q_balance, "total_debt"), date)
+        cash = _val(_get_row(q_balance, "cash"), date)
         invested_capital = _val(_get_row(q_balance, "invested_capital"), date)
         shares = _val(_get_row(q_balance, "shares"), date)
         if np.isnan(shares):
@@ -242,6 +254,7 @@ def _ttm_snapshots(q_income, q_balance, q_cashflow, prices, dividends):
             "ebit": ebit,
             "invested_capital": invested_capital,
             "nopat": nopat,
+            "diluted_eps": diluted_eps,
         })
 
     return results
@@ -253,15 +266,22 @@ def _yoy_eps_growth_pct(df, tolerance_days=45):
     연간 스냅샷과 분기 TTM 스냅샷이 섞여 있으므로 단순히 바로 이전 row와 비교하면
     분기 간(QoQ) 변화를 연간(YoY) 성장률처럼 취급하는 오류가 생긴다. 대신 날짜 기준으로
     1년 전에 가장 가까운(허용오차 tolerance_days 이내) row를 찾아서 비교한다.
+
+    EPS 산출 기준(eps_basis)이 다른 두 시점은 비교하지 않는다. 공시 희석EPS와
+    순이익/주식수 계산값은 우선주가 있는 종목에서 14%까지 벌어지므로, 기준이 섞이면
+    실제로는 없는 성장/역성장이 만들어진다.
     """
     dates = df["date"].tolist()
     eps = df["eps"].tolist()
+    basis = df["eps_basis"].tolist()
     growth = [np.nan] * len(df)
 
     for i in range(len(df)):
         target = dates[i] - pd.DateOffset(years=1)
         best_j, best_diff = None, None
         for j in range(i):
+            if basis[j] != basis[i]:
+                continue
             diff = abs((dates[j] - target).days)
             if diff <= tolerance_days and (best_diff is None or diff < best_diff):
                 best_j, best_diff = j, diff
@@ -275,9 +295,11 @@ def _yoy_eps_growth_pct(df, tolerance_days=45):
             continue
         if isinstance(cur_eps, float) and np.isnan(cur_eps):
             continue
-        if prev_eps == 0:
+        # 전기가 적자면 성장률이 의미를 갖지 못한다. 적자 -> 흑자 전환을 '고성장'으로 잡으면
+        # PEG가 터무니없이 낮게(=저평가처럼) 나오므로 전기 흑자일 때만 계산한다.
+        if prev_eps <= 0:
             continue
-        growth[i] = (cur_eps - prev_eps) / abs(prev_eps) * 100
+        growth[i] = (cur_eps - prev_eps) / prev_eps * 100
 
     return pd.Series(growth, index=df.index)
 
@@ -286,9 +308,20 @@ def _derive_ratios(rows):
     """raw 스냅샷 목록(dict, date 포함) -> 비율까지 계산된 DataFrame."""
     df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
 
-    df["eps"] = df["net_income"] / df["shares"]
+    # EPS는 회사가 공시한 희석EPS를 우선 사용한다. 순이익/기말주식수로 직접 계산하면
+    # 우선주가 있는 종목(삼성전자 등)에서 분자는 전사 순이익, 분모는 보통주만이 되어
+    # 14%까지 벌어진다. 공시값이 없을 때만 직접 계산으로 폴백하고, 어느 기준으로 구했는지
+    # 표시해 둔다(PEG에서 기준이 다른 시점끼리 비교하지 않도록).
+    reported = df["diluted_eps"].notna()
+    df["eps"] = df["diluted_eps"].where(reported, df["net_income"] / df["shares"])
+    df["eps_basis"] = np.where(reported, "reported", "derived")
+
+    # 자기자본이 0 이하(자본잠식)면 이를 분모로 쓰는 지표는 값이 나와도 의미가 없다.
+    # 예: 순이익 -200 / 자기자본 -500 -> ROE +40% 로 우량주처럼 보인다.
+    equity_pos = df["equity"].where(df["equity"] > 0)
+
     df["PER"] = df["market_cap"] / df["net_income"]
-    df["PBR"] = df["market_cap"] / df["equity"]
+    df["PBR"] = df["market_cap"] / equity_pos
     df["PSR"] = df["market_cap"] / df["revenue"]
     df["EV_EBITDA"] = df["ev"] / df["ebitda"]
     df["DividendYield"] = df["div_ttm"] / df["price"] * 100
@@ -299,17 +332,19 @@ def _derive_ratios(rows):
     peg[(eps_growth_pct <= 0)] = np.nan  # 이익이 역성장/적자면 PEG는 의미 없음
     df["PEG"] = peg
 
-    df["ROE"] = df["net_income"] / df["equity"] * 100
-    df["ROIC"] = df["nopat"] / df["invested_capital"] * 100
+    df["ROE"] = df["net_income"] / equity_pos * 100
+    df["ROIC"] = df["nopat"] / df["invested_capital"].where(df["invested_capital"] > 0) * 100
     df["OperatingMargin"] = df["ebit"] / df["revenue"] * 100
-    df["DebtEquity"] = df["total_debt"] / df["equity"] * 100
+    df["DebtEquity"] = df["total_debt"] / equity_pos * 100
 
     earnings_yield = df["ebit"] / df["ev"] * 100  # 그린블랏 방식 이익수익률 (EBIT/EV)
     df["MagicFormula"] = df["ROIC"] + earnings_yield  # 그린블랏 마법공식 = ROIC + 이익수익률
 
-    bps = df["equity"] / df["shares"]
-    graham_product = 22.5 * df["eps"] * bps
-    df["GrahamNumber"] = np.sqrt(graham_product.where(graham_product >= 0))
+    # 그레이엄 넘버는 EPS와 BPS가 '각각' 양수여야 한다. 곱만 검사하면 둘 다 음수인
+    # (적자 + 자본잠식) 기업이 통과해서 우량주보다 높은 값이 나온다.
+    eps_pos = df["eps"].where(df["eps"] > 0)
+    bps_pos = (df["equity"] / df["shares"]).where(lambda s: s > 0)
+    df["GrahamNumber"] = np.sqrt(22.5 * eps_pos * bps_pos)
 
     for col in METRICS:
         df[col] = df[col].replace([np.inf, -np.inf], np.nan)
@@ -359,7 +394,11 @@ def get_ratio_history(ticker_symbol, years=3, force_refresh=False):
 
         if need_annual or need_ttm:
             try:
-                hist = t.history(period=f"{years + 2}y")
+                # auto_adjust=False: 분할은 소급 조정되지만 배당은 차감되지 않은 '그날 실제 주가'.
+                # 기본값(True)은 배당까지 소급 차감해서 과거 주가가 실제보다 낮게 나오고
+                # (고배당주는 -20%대), 그 결과 PER 등이 과거일수록 싸게 보이는 가짜 추세가 생긴다.
+                # Yahoo의 주식수도 분할 기준으로 재작성되므로 이 조합이 정합적이다.
+                hist = t.history(period=f"{years + 2}y", auto_adjust=False)
                 if hist.empty:
                     raise ValueError(f"'{ticker_symbol}' 가격 데이터를 가져올 수 없습니다. 티커를 확인하세요.")
 
@@ -388,7 +427,13 @@ def get_ratio_history(ticker_symbol, years=3, force_refresh=False):
                     q_income = t.quarterly_income_stmt
                     q_balance = t.quarterly_balance_sheet
                     q_cashflow = t.quarterly_cashflow
-                    for ttm in _ttm_snapshots(q_income, q_balance, q_cashflow, prices, dividends):
+                    # 연간 결산일과 겹치는 TTM은 만들지 않는다 (감사받은 연간 수치를 정본으로 둠)
+                    annual_dates = {
+                        r["date"] for r in db.fetch_snapshots(ticker_symbol) if r["kind"] == "annual"
+                    }
+                    for ttm in _ttm_snapshots(
+                        q_income, q_balance, q_cashflow, prices, dividends, skip_dates=annual_dates
+                    ):
                         db.upsert_snapshot(ticker_symbol, ttm["date"].strftime("%Y-%m-%d"), "ttm", ttm, fetched_at_str)
                     db.touch_meta(ticker_symbol, ttm_fetched_at=fetched_at_str, schema_version=db.SCHEMA_VERSION)
                     cache_info["ttm"] = "fetched"

@@ -9,12 +9,15 @@ RAW_COLUMNS = [
     "price", "revenue", "net_income", "equity", "shares",
     "ebitda", "fcf", "market_cap", "ev", "div_ttm",
     "total_debt", "ebit", "invested_capital", "nopat",
+    "diluted_eps",
 ]
 
-# RAW_COLUMNS에 새 컬럼을 추가할 때마다 이 값을 1 증가시킨다.
-# ticker_meta.schema_version이 이보다 낮은 티커는 TTL과 무관하게 강제로 다시 조회되어
-# 새로 추가된 컬럼값이 채워진다 (그 전까지 캐시된 row는 새 컬럼이 NULL이라 관련 지표가 비게 됨).
-SCHEMA_VERSION = 1
+# RAW_COLUMNS에 새 컬럼을 추가하거나, 기존 컬럼에 저장되는 값의 의미가 바뀌면 이 값을 1 증가시킨다.
+# ticker_meta.schema_version이 이보다 낮은 티커는 TTL과 무관하게 강제로 다시 조회된다.
+#   v1: 초기 스키마
+#   v2: diluted_eps 추가 + price/market_cap/ev를 배당 미조정(auto_adjust=False) 기준으로 변경
+#       + total_debt 누락 시 0이 아닌 NULL 저장
+SCHEMA_VERSION = 2
 
 
 def get_connection():
