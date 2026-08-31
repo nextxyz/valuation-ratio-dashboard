@@ -78,6 +78,18 @@ def init_db():
                 value TEXT
             )
         """)
+        # 방문 집계. day는 KST 기준 날짜(YYYY-MM-DD), visitor는 쿠키에 심은 랜덤 ID.
+        # PK 앞자리가 day라 "그날의 행"만 훑는 조회는 이 인덱스로 끝난다.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS visits (
+                day TEXT NOT NULL,
+                visitor TEXT NOT NULL,
+                hits INTEGER NOT NULL DEFAULT 1,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                PRIMARY KEY (day, visitor)
+            )
+        """)
         conn.commit()
     finally:
         conn.close()
@@ -249,6 +261,38 @@ def fetch_snapshots(ticker, since_date=None):
                 (ticker,),
             ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def record_visit(day, visitor, now_iso):
+    """(day, visitor) 한 건을 기록한다. 같은 사람이 그날 또 오면 hits만 올라간다."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO visits (day, visitor, hits, first_seen, last_seen)
+            VALUES (?, ?, 1, ?, ?)
+            ON CONFLICT(day, visitor) DO UPDATE SET
+                hits = hits + 1,
+                last_seen = excluded.last_seen
+            """,
+            (day, visitor, now_iso, now_iso),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def visit_stats(day):
+    """그날의 (순방문자 수, 총 방문 횟수)."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS visitors, COALESCE(SUM(hits), 0) AS hits FROM visits WHERE day = ?",
+            (day,),
+        ).fetchone()
+        return row["visitors"], row["hits"]
     finally:
         conn.close()
 

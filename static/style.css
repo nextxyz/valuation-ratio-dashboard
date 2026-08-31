@@ -73,6 +73,19 @@ body {
 
 /* ---------- 탭 ---------- */
 
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.visitor-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: default;
+}
+
 .tabs {
   display: flex;
   gap: 4px;

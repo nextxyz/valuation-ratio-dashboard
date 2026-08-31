@@ -9,14 +9,19 @@
 <body>
   <header class="topbar">
     <h1>가치투자자의 대시보드</h1>
-    <nav class="tabs" role="tablist">
-      <button id="tab-btn-ratios" class="tab-btn is-active" role="tab" aria-selected="true" aria-controls="panel-ratios" data-panel="ratios">
-        밸류에이션 지표
-      </button>
-      <button id="tab-btn-compare" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-compare" data-panel="compare">
-        수익률 비교
-      </button>
-    </nav>
+    <div class="topbar-right">
+      <nav class="tabs" role="tablist">
+        <button id="tab-btn-ratios" class="tab-btn is-active" role="tab" aria-selected="true" aria-controls="panel-ratios" data-panel="ratios">
+          밸류에이션 지표
+        </button>
+        <button id="tab-btn-compare" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-compare" data-panel="compare">
+          수익률 비교
+        </button>
+      </nav>
+      {% if visitors_today %}
+      <span class="visitor-count" title="오늘 방문자 수 (KST 기준, 브라우저별 1회)">오늘 {{ visitors_today }}명</span>
+      {% endif %}
+    </div>
   </header>
 
   <main>
