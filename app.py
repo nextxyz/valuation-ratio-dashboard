@@ -1,7 +1,8 @@
 import math
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 
+import prices
 import tickers
 from ratios import METRICS, get_ratio_history
 
@@ -47,10 +48,26 @@ def api_ratios(ticker):
     return jsonify(payload)
 
 
+@app.route("/api/compare")
+def api_compare():
+    """N개 종목의 기준일 대비 상대 수익률. ?tickers=AAPL,삼성전자&from=YYYY-MM-DD&to=YYYY-MM-DD"""
+    raw = request.args.get("tickers", "")
+    queries = [q.strip() for q in raw.split(",") if q.strip()]
+
+    try:
+        payload = prices.compare(queries, request.args.get("from", ""), request.args.get("to", ""))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"주가를 불러오지 못했습니다: {e}"}), 400
+
+    return jsonify(payload)
+
+
 if __name__ == "__main__":
     import os
 
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "5000"))
-    debug = os.environ.get("FLASK_DEBUG", "1") == "1"
+    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
     app.run(host=host, port=port, debug=debug)

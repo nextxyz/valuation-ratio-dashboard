@@ -252,3 +252,20 @@ function renderTable(data) {
 
   tableEl.innerHTML = thead + `<tbody>${bodyRows}</tbody>`;
 }
+
+// ---------- 탭 전환 ----------
+
+document.querySelectorAll(".tab-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach((b) => {
+      const active = b === btn;
+      b.classList.toggle("is-active", active);
+      b.setAttribute("aria-selected", String(active));
+    });
+    document.querySelectorAll(".panel").forEach((panel) => {
+      const active = panel.id === `panel-${btn.dataset.panel}`;
+      panel.classList.toggle("is-active", active);
+      panel.hidden = !active;
+    });
+  });
+});
