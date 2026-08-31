@@ -1,0 +1,30 @@
+[Unit]
+Description=가치투자자의 대시보드 (Flask)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/workspace/valuation-ratio-dashboard
+
+# cloudflared ingress(valueinvest.cwworld.party -> 127.0.0.1:5000)와 맞춘다.
+# 여기서 지정하므로 run.sh를 로컬 수정할 이유가 없다(= git pull 충돌 재발 방지).
+Environment=HOST=127.0.0.1
+Environment=PORT=5000
+Environment=FLASK_DEBUG=0
+Environment=PYTHONUNBUFFERED=1
+Environment=MALLOC_ARENA_MAX=2
+
+ExecStart=/home/ubuntu/workspace/valuation-ratio-dashboard/.venv/bin/python3 app.py
+
+Restart=always
+RestartSec=5s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=valuation-dashboard
+
+[Install]
+WantedBy=multi-user.target

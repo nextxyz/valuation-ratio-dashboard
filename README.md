@@ -94,6 +94,17 @@ HOST=0.0.0.0 ./run.sh
 > ⚠️ **보안 주의**: Flask 디버거를 외부에 노출하면 원격 코드 실행 위험이 있습니다.
 > 외부에 열어둘 때는 `FLASK_DEBUG`를 절대 켜지 마세요(기본값이 `0`이라 그냥 두면 꺼져 있습니다).
 
+### 운영 서버 (systemd)
+
+상시 운영은 tmux 대신 systemd로 합니다. 유닛 파일과 설치·운영 명령은 [`deploy/`](deploy/)에 있습니다.
+
+```bash
+git pull && sudo systemctl restart valuation-dashboard   # 배포
+journalctl -u valuation-dashboard -f                     # 로그
+```
+
+크래시 시 자동 재기동되고, 매주 일요일 04:00(KST) 자동 재시작으로 메모리를 정리합니다.
+
 ### 배포 시 주의: static 파일 캐시
 
 `app.py`의 `static_url()` 헬퍼가 CSS·JS URL에 파일 수정시각을 붙입니다(`/static/main.js?v=1788154471`).
@@ -207,6 +218,10 @@ valuation-ratio-dashboard/
 ├── requirements.txt    # 파이썬 의존성
 ├── run.sh              # 실행 스크립트 (.venv 파이썬, 기본 127.0.0.1 · 디버그 off)
 ├── cache.sqlite3       # SQLite 캐시 DB (자동 생성)
+├── deploy/             # 운영 서버 systemd 유닛 (설치·운영법은 deploy/README.md)
+│   ├── valuation-dashboard.service
+│   ├── valuation-dashboard-restart.service
+│   └── valuation-dashboard-restart.timer
 ├── templates/
 │   └── index.html      # 대시보드 페이지 (2개 탭)
 └── static/

@@ -1,0 +1,9 @@
+[Unit]
+Description=가치투자자의 대시보드 주간 재시작
+# 한글 종목 조회 때 지연 import 되는 FinanceDataReader(약 27MB)는 프로세스가
+# 죽을 때까지 안 내려온다. 주 1회 재시작으로 그 누적분을 털어낸다.
+Requisite=valuation-dashboard.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl restart valuation-dashboard.service

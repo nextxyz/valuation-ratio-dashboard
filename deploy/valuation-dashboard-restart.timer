@@ -1,0 +1,11 @@
+[Unit]
+Description=가치투자자의 대시보드 주간 재시작 타이머
+
+[Timer]
+# 서버 타임존이 UTC이고 systemd 245는 OnCalendar에 타임존 지정을 지원하지 않는다.
+# 토 19:00 UTC = 일요일 04:00 KST (트래픽이 가장 적은 시간대)
+OnCalendar=Sat *-*-* 19:00:00
+Unit=valuation-dashboard-restart.service
+
+[Install]
+WantedBy=timers.target
