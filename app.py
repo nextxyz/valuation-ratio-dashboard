@@ -1,10 +1,11 @@
 import math
+import os
 import re
 import uuid
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from flask import Flask, jsonify, make_response, render_template, request
+from flask import Flask, jsonify, make_response, render_template, request, url_for
 
 import db
 import prices
@@ -37,6 +38,26 @@ def _is_bot(user_agent):
 
 def _kst_today():
     return datetime.now(KST).strftime("%Y-%m-%d")
+
+
+@app.context_processor
+def _static_url_helper():
+    """템플릿용 static_url(): /static/main.js?v=<파일 수정시각>.
+
+    Flask는 static에 Cache-Control: no-cache를 붙여 매번 재검증하게 하지만,
+    앞단 CDN(Cloudflare의 Browser Cache TTL 기본 4시간)이 이를 덮어써서
+    배포 직후 방문자가 새 HTML + 낡은 JS 조합을 받는 일이 생긴다.
+    파일이 바뀌면 URL이 바뀌게 해서 그 창을 아예 없앤다.
+    """
+
+    def static_url(filename):
+        try:
+            version = int(os.stat(os.path.join(app.static_folder, filename)).st_mtime)
+        except OSError:
+            return url_for("static", filename=filename)
+        return url_for("static", filename=filename, v=version)
+
+    return {"static_url": static_url}
 
 
 def _clean(v):

@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>가치투자자의 대시보드</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <link rel="stylesheet" href="{{ static_url('style.css') }}" />
 </head>
 <body>
   <header class="topbar">
@@ -101,7 +101,7 @@
     </section>
   </main>
 
-  <script src="{{ url_for('static', filename='main.js') }}"></script>
-  <script src="{{ url_for('static', filename='compare.js') }}"></script>
+  <script src="{{ static_url('main.js') }}"></script>
+  <script src="{{ static_url('compare.js') }}"></script>
 </body>
 </html>
