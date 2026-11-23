@@ -19,6 +19,14 @@ RAW_COLUMNS = [
 #       + total_debt 누락 시 0이 아닌 NULL 저장
 SCHEMA_VERSION = 2
 
+# 재무제표 표(financials.py)용 원본 수치. 비율은 읽을 때마다 이 값들로 다시 계산한다.
+# price·dps_ttm은 결산일 기준 주가와 직전 12개월 주당배당금. shares와 같은 시점에 함께 저장되므로
+# 나중에 액면분할이 있어도 한 행 안에서는 시가총액(price x shares)이 정합적이다.
+FIN_COLUMNS = [
+    "revenue", "op_income", "net_income", "total_assets", "total_liab", "equity",
+    "shares", "capex", "fcf", "div_paid", "price", "dps_ttm",
+]
+
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -78,6 +86,27 @@ def init_db():
                 value TEXT
             )
         """)
+        # 재무제표 원본 수치. (ticker, period, date)로 upsert만 하고 지우지 않으므로
+        # yfinance가 더 이상 주지 않는 오래된 기간도 계속 남아 이력이 쌓인다.
+        fin_cols_sql = ", ".join(f"{c} REAL" for c in FIN_COLUMNS)
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS fin_snapshots (
+                ticker TEXT NOT NULL,
+                period TEXT NOT NULL CHECK (period IN ('annual', 'quarterly')),
+                date TEXT NOT NULL,
+                {fin_cols_sql},
+                fetched_at TEXT NOT NULL,
+                PRIMARY KEY (ticker, period, date)
+            )
+        """)
+        for col in FIN_COLUMNS:
+            try:
+                conn.execute(f"ALTER TABLE fin_snapshots ADD COLUMN {col} REAL")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+        # 예전 방식(계산 결과 JSON 통째 캐시)의 잔여 항목 정리
+        conn.execute("DELETE FROM kv_meta WHERE key LIKE 'financials:%'")
         # 방문 집계. day는 KST 기준 날짜(YYYY-MM-DD), visitor는 쿠키에 심은 랜덤 ID.
         # PK 앞자리가 day라 "그날의 행"만 훑는 조회는 이 인덱스로 끝난다.
         conn.execute("""
@@ -260,6 +289,47 @@ def fetch_snapshots(ticker, since_date=None):
                 "SELECT * FROM ratio_snapshots WHERE ticker = ? ORDER BY date",
                 (ticker,),
             ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def upsert_fin_snapshots(ticker, period, rows, fetched_at):
+    """rows: [(date_str, {col: value}), ...]
+
+    새로 받은 값이 NULL이면 기존 값을 유지한다(COALESCE). yfinance는 가장 오래된 기간을
+    항목 대부분이 빈 채로 주는 경우가 많아서, 그대로 덮어쓰면 예전에 온전히 받아둔 값이 지워진다.
+    """
+    cols = ["ticker", "period", "date"] + FIN_COLUMNS + ["fetched_at"]
+    placeholders = ", ".join("?" for _ in cols)
+    updates = ", ".join(f"{c} = COALESCE(excluded.{c}, {c})" for c in FIN_COLUMNS)
+    conn = get_connection()
+    try:
+        conn.executemany(
+            f"""
+            INSERT INTO fin_snapshots ({", ".join(cols)})
+            VALUES ({placeholders})
+            ON CONFLICT(ticker, period, date) DO UPDATE SET
+                {updates},
+                fetched_at = excluded.fetched_at
+            """,
+            [
+                [ticker, period, date_str] + [raw.get(c) for c in FIN_COLUMNS] + [fetched_at]
+                for date_str, raw in rows
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def fetch_fin_snapshots(ticker, period):
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM fin_snapshots WHERE ticker = ? AND period = ? ORDER BY date",
+            (ticker, period),
+        ).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()

@@ -1,18 +1,22 @@
 """
-재무제표 요약표: 연도별(yfinance가 주는 가장 오래된 회계연도부터) + 최근 5개 분기.
+재무제표 요약표: 연도별(DB에 쌓인 가장 오래된 회계연도부터) + 최근 5개 분기.
 
-yfinance(Yahoo)는 연간 재무제표를 보통 4~5개 회계연도, 분기 재무제표를 6~7개 분기까지 준다.
-가장 오래된 기간은 항목이 대부분 비어 있는 경우가 많으므로, 표시할 지표가 하나도 없는
-기간(column)은 버린다.
+저장 방식 (db.fin_snapshots):
+- 원본 수치(매출·이익·잔액·현금흐름, 결산일 주가·주당배당금)만 (ticker, period, date) 단위로
+  upsert하고 지우지 않는다. 비율(ROE, PER 등)은 읽을 때마다 원본으로부터 다시 계산한다.
+- yfinance는 연간 4~5년, 분기 6~7개 분기만 주지만, 조회가 반복될수록 새 기간이 추가되고
+  예전 기간은 남아 있으므로 시간이 지날수록 표에 보이는 과거가 길어진다.
+- 새로 받은 값이 비어 있으면 기존 값을 유지한다(가장 오래된 열이 빈 채로 오는 경우 대비).
+- 연간은 ANNUAL_TTL, 분기는 QUARTERLY_TTL마다 yfinance에서 다시 받는다. 그 사이엔 DB만 읽는다.
+- FIN_SCHEMA_VERSION: 저장하는 원본 컬럼이나 그 의미가 바뀌면 올린다. 저장된 버전이 낮은
+  티커는 TTL과 무관하게 다시 조회된다(기존 행은 지우지 않고 갱신).
 
 분기 표의 기준:
 - 매출액·영업이익·당기순이익·CAPEX·FCF: 해당 분기 단독 값
 - 영업이익률·순이익률: 해당 분기 기준
 - ROE·ROA: 분기 순이익 x 4 (연환산) / 분기말 자본·자산
-- PER·배당성향: 최근 4개 분기 합(TTM) 기준. 4개 분기가 모이지 않으면 비워 둔다.
+- PER·배당성향: 연속된 4개 분기 합(TTM) 기준. DB에 연속 4개 분기가 없으면 비워 둔다.
 - PBR·부채비율·배당수익률: 분기말 시점 기준
-
-계산 결과(JSON)를 kv_meta에 통째로 캐시한다(FIN_TTL). 조회 실패 시 오래된 캐시로 폴백한다.
 """
 
 import json
@@ -25,10 +29,10 @@ import yfinance as yf
 
 import db
 
-FIN_TTL = timedelta(hours=24)
+ANNUAL_TTL = timedelta(days=30)
+QUARTERLY_TTL = timedelta(hours=24)
 QUARTERS = 5
-# 계산식/구조가 바뀌면 올린다. 캐시된 payload의 버전이 다르면 다시 조회한다.
-CACHE_VERSION = 1
+FIN_SCHEMA_VERSION = 1
 
 ROWS = {
     "revenue": (["Total Revenue", "Operating Revenue"], "income"),
@@ -43,6 +47,8 @@ ROWS = {
     "ocf": (["Operating Cash Flow"], "cashflow"),
     "div_paid": (["Cash Dividends Paid", "Common Stock Dividend Paid"], "cashflow"),
 }
+
+AMOUNT_KEYS = ["revenue", "op_income", "net_income", "total_assets", "total_liab", "equity", "capex", "fcf"]
 
 # 화면에 표시하는 순서. kind: amount(통화 금액) | pct(%) | x(배)
 METRIC_ROWS = [
@@ -70,29 +76,14 @@ def _nan(v):
     return v is None or (isinstance(v, float) and math.isnan(v))
 
 
-def _row(stmts, key):
-    names, which = ROWS[key]
-    df = stmts.get(which)
-    if df is None or df.empty:
-        return None
-    for name in names:
-        if name in df.index:
-            return df.loc[name]
-    return None
-
-
-def _get(stmts, key, date):
-    row = _row(stmts, key)
-    if row is None:
-        return np.nan
-    v = row.get(date, np.nan)
-    return np.nan if v is None else float(v)
-
-
 def _div(a, b, scale=1.0):
     if _nan(a) or _nan(b) or b == 0:
-        return np.nan
+        return None
     return a / b * scale
+
+
+def _pos(v):
+    return v if not _nan(v) and v > 0 else None
 
 
 def _to_naive(ts):
@@ -100,16 +91,28 @@ def _to_naive(ts):
     return ts.tz_localize(None) if ts.tzinfo is not None else ts
 
 
+# ---------- yfinance -> 원본 수치 ----------
+
+
+def _get(stmts, key, date):
+    names, which = ROWS[key]
+    df = stmts.get(which)
+    if df is None or df.empty:
+        return None
+    for name in names:
+        if name in df.index:
+            v = df.loc[name].get(date)
+            return None if _nan(v) else float(v)
+    return None
+
+
 def _price_at(prices, date):
     """date 당일 또는 그 이전 가장 최근 종가 (결산일이 휴장일인 경우 대비)."""
     if prices is None or prices.empty:
-        return np.nan
+        return None
     pos = prices.index.searchsorted(date, side="right") - 1
-    if pos < 0:
-        return np.nan
-    # 결산일보다 열흘 넘게 이전 종가밖에 없으면 그 시점 주가로 보지 않는다(상장 전 등)
-    if (date - prices.index[pos]).days > 10:
-        return np.nan
+    if pos < 0 or (date - prices.index[pos]).days > 10:  # 상장 전 등 그 시점 주가가 없음
+        return None
     return float(prices.iloc[pos])
 
 
@@ -120,113 +123,29 @@ def _dps_ttm(dividends, date):
     return float(window.sum())
 
 
-def _capex_fcf(stmts, date):
-    """CAPEX는 지출액을 양수로 표시한다(yfinance는 음수로 줌). FCF가 없으면 영업현금흐름 - CAPEX."""
-    capex_raw = _get(stmts, "capex", date)
-    capex = abs(capex_raw) if not _nan(capex_raw) else np.nan
-    fcf = _get(stmts, "fcf", date)
-    if _nan(fcf):
-        ocf = _get(stmts, "ocf", date)
-        if not _nan(ocf):
-            fcf = ocf - (capex if not _nan(capex) else 0.0)
-    return capex, fcf
-
-
-def _valuation(net_income_annual, equity, shares, price, dps, div_paid_annual):
-    """PER·PBR·배당수익률·배당성향. 순이익/자본이 0 이하면 PER/PBR은 의미가 없으므로 비운다."""
-    market_cap = price * shares if not _nan(price) and not _nan(shares) else np.nan
-    per = _div(market_cap, net_income_annual) if not _nan(net_income_annual) and net_income_annual > 0 else np.nan
-    pbr = _div(market_cap, equity) if not _nan(equity) and equity > 0 else np.nan
-    div_yield = _div(dps, price, 100) if not _nan(price) and price > 0 else np.nan
-
-    payout = np.nan
-    if not _nan(net_income_annual) and net_income_annual > 0:
-        if not _nan(div_paid_annual):
-            payout = abs(div_paid_annual) / net_income_annual * 100
-        elif not _nan(shares) and dps > 0:
-            payout = dps * shares / net_income_annual * 100
-        elif dps == 0:
-            payout = 0.0
-    return per, pbr, div_yield, payout
-
-
-def _annual_column(stmts, date, prices, dividends):
-    revenue = _get(stmts, "revenue", date)
-    op_income = _get(stmts, "op_income", date)
-    net_income = _get(stmts, "net_income", date)
-    assets = _get(stmts, "total_assets", date)
-    liab = _get(stmts, "total_liab", date)
-    equity = _get(stmts, "equity", date)
-    shares = _get(stmts, "shares", date)
-    capex, fcf = _capex_fcf(stmts, date)
-    price = _price_at(prices, date)
-    dps = _dps_ttm(dividends, date)
-    per, pbr, div_yield, payout = _valuation(
-        net_income, equity, shares, price, dps, _get(stmts, "div_paid", date)
-    )
-    equity_pos = equity if not _nan(equity) and equity > 0 else np.nan
-    return {
-        "revenue": revenue,
-        "op_income": op_income,
-        "net_income": net_income,
-        "total_assets": assets,
-        "total_liab": liab,
-        "equity": equity,
-        "capex": capex,
-        "fcf": fcf,
-        "op_margin": _div(op_income, revenue, 100),
-        "net_margin": _div(net_income, revenue, 100),
-        "roe": _div(net_income, equity_pos, 100),
-        "roa": _div(net_income, assets, 100),
-        "debt_ratio": _div(liab, equity_pos, 100),
-        "per": per,
-        "pbr": pbr,
-        "div_yield": div_yield,
-        "payout": payout,
-    }
-
-
-def _ttm(stmts, key, dates, i):
-    """dates[i]를 끝으로 하는 4개 분기 합. 하나라도 비면 NaN."""
-    if i < 3:
-        return np.nan
-    vals = [_get(stmts, key, d) for d in dates[i - 3 : i + 1]]
-    if any(_nan(v) for v in vals):
-        return np.nan
-    return float(sum(vals))
-
-
-def _quarter_column(stmts, dates, i, prices, dividends):
-    date = dates[i]
-    col = _annual_column(stmts, date, prices, dividends)  # 분기 단독 값·분기말 잔액은 그대로 사용
-
-    net_income = col["net_income"]
-    equity = col["equity"]
-    equity_pos = equity if not _nan(equity) and equity > 0 else np.nan
-    annualized = net_income * 4 if not _nan(net_income) else np.nan
-    col["roe"] = _div(annualized, equity_pos, 100)
-    col["roa"] = _div(annualized, col["total_assets"], 100)
-
-    ni_ttm = _ttm(stmts, "net_income", dates, i)
-    per, _, _, payout = _valuation(
-        ni_ttm,
-        equity,
-        _get(stmts, "shares", date),
-        _price_at(prices, date),
-        _dps_ttm(dividends, date),
-        _ttm(stmts, "div_paid", dates, i),
-    )
-    col["per"] = per
-    col["payout"] = payout
-    return col
-
-
-def _period_dates(stmts):
+def _raw_rows(stmts, prices, dividends):
+    """재무제표 묶음 -> [(date_str, raw dict)]. 금액 항목이 하나도 없는 기간은 저장하지 않는다."""
     dates = set()
     for df in stmts.values():
         if df is not None and not df.empty:
-            dates.update(_to_naive(c) for c in df.columns)
-    return sorted(dates)
+            dates.update(df.columns)
+
+    rows = []
+    for d in sorted(dates):
+        raw = {k: _get(stmts, k, d) for k in ROWS if k != "ocf"}
+        # CAPEX는 지출액을 양수로 저장(yfinance는 음수). FCF가 없으면 영업현금흐름 - CAPEX.
+        if raw["capex"] is not None:
+            raw["capex"] = abs(raw["capex"])
+        if raw["fcf"] is None:
+            ocf = _get(stmts, "ocf", d)
+            if ocf is not None:
+                raw["fcf"] = ocf - (raw["capex"] or 0.0)
+        if all(raw[k] is None for k in AMOUNT_KEYS):
+            continue
+        raw["price"] = _price_at(prices, d)
+        raw["dps_ttm"] = _dps_ttm(dividends, d) if raw["price"] is not None else None
+        rows.append((d.strftime("%Y-%m-%d"), raw))
+    return rows
 
 
 def _normalize(df):
@@ -237,50 +156,31 @@ def _normalize(df):
     return df
 
 
-def _has_core(col):
-    """금액 지표가 하나도 없는 기간은 표에서 뺀다 (yfinance의 가장 오래된 열은 대부분 비어 있음)."""
-    return any(not _nan(col[k]) for k, _, kind in METRIC_ROWS if kind == "amount")
-
-
-def _clean(v):
-    if _nan(v) or (isinstance(v, float) and math.isinf(v)):
-        return None
-    return float(v)
-
-
-def _table(columns, labels):
-    return {
-        "periods": labels,
-        "rows": {k: [_clean(c[k]) for c in columns] for k, _, _ in METRIC_ROWS},
-    }
-
-
-def _quarter_label(d):
-    return f"{d.year}.{(d.month - 1) // 3 + 1}Q"
-
-
-def _build(ticker_symbol):
+def _fetch_and_store(ticker_symbol, need_annual, need_quarterly, now_iso):
     t = yf.Ticker(ticker_symbol)
+    stmts = {}
+    if need_annual:
+        stmts["annual"] = {
+            "income": _normalize(t.income_stmt),
+            "balance": _normalize(t.balance_sheet),
+            "cashflow": _normalize(t.cashflow),
+        }
+        if stmts["annual"]["income"] is None or stmts["annual"]["income"].empty:
+            raise ValueError(f"'{ticker_symbol}' 재무제표 데이터를 가져올 수 없습니다.")
+    if need_quarterly:
+        stmts["quarterly"] = {
+            "income": _normalize(t.quarterly_income_stmt),
+            "balance": _normalize(t.quarterly_balance_sheet),
+            "cashflow": _normalize(t.quarterly_cashflow),
+        }
 
-    annual = {
-        "income": _normalize(t.income_stmt),
-        "balance": _normalize(t.balance_sheet),
-        "cashflow": _normalize(t.cashflow),
-    }
-    quarterly = {
-        "income": _normalize(t.quarterly_income_stmt),
-        "balance": _normalize(t.quarterly_balance_sheet),
-        "cashflow": _normalize(t.quarterly_cashflow),
-    }
-    if annual["income"] is None or annual["income"].empty:
+    all_dates = [c for s in stmts.values() for df in s.values() if df is not None for c in df.columns]
+    if not all_dates:
         raise ValueError(f"'{ticker_symbol}' 재무제표 데이터를 가져올 수 없습니다.")
 
-    a_dates = _period_dates(annual)
-    q_dates = _period_dates(quarterly)
-    oldest = min(a_dates + q_dates)
-
     # 배당 미조정 실제 주가 (ratios.py와 같은 이유: 과거 PER이 싸게 보이는 왜곡 방지)
-    hist = t.history(start=(oldest - pd.Timedelta(days=30)).strftime("%Y-%m-%d"), auto_adjust=False)
+    start = (min(all_dates) - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
+    hist = t.history(start=start, auto_adjust=False)
     prices = hist["Close"] if not hist.empty else pd.Series(dtype=float)
     prices.index = [_to_naive(d) for d in prices.index]
 
@@ -289,20 +189,8 @@ def _build(ticker_symbol):
         dividends = dividends.copy()
         dividends.index = [_to_naive(d) for d in dividends.index]
 
-    a_cols, a_labels = [], []
-    for d in a_dates:
-        col = _annual_column(annual, d, prices, dividends)
-        if _has_core(col):
-            a_cols.append(col)
-            a_labels.append(f"{d.year}.{d.month:02d}")
-
-    q_cols, q_labels = [], []
-    for i, d in enumerate(q_dates):
-        col = _quarter_column(quarterly, q_dates, i, prices, dividends)
-        if _has_core(col):
-            q_cols.append(col)
-            q_labels.append(_quarter_label(d))
-    q_cols, q_labels = q_cols[-QUARTERS:], q_labels[-QUARTERS:]
+    for period, s in stmts.items():
+        db.upsert_fin_snapshots(ticker_symbol, period, _raw_rows(s, prices, dividends), now_iso)
 
     currency = None
     try:
@@ -310,44 +198,142 @@ def _build(ticker_symbol):
         currency = info.get("financialCurrency") or info.get("currency")
     except Exception:
         pass
+    return currency
+
+
+# ---------- 원본 수치 -> 표 ----------
+
+
+def _ratios(r, ni_annual, div_paid_annual, roe_roa_ni):
+    """r: 원본 행. ni_annual/div_paid_annual: PER·배당성향에 쓸 연간(또는 TTM) 값.
+    roe_roa_ni: ROE·ROA 분자(연간은 그대로, 분기는 x4 연환산)."""
+    price, shares, dps = r["price"], r["shares"], r["dps_ttm"]
+    equity_pos = _pos(r["equity"])
+    market_cap = price * shares if not _nan(price) and not _nan(shares) else None
+
+    # 적자면 PER·배당성향은 의미가 없으므로 비운다
+    per = _div(market_cap, ni_annual) if _pos(ni_annual) else None
+    payout = None
+    if _pos(ni_annual):
+        if not _nan(div_paid_annual):
+            payout = abs(div_paid_annual) / ni_annual * 100
+        elif not _nan(dps) and not _nan(shares) and dps > 0:
+            payout = dps * shares / ni_annual * 100
+        elif dps == 0:
+            payout = 0.0
 
     return {
-        "version": CACHE_VERSION,
-        "currency": currency,
-        "metrics": [{"key": k, "label": label, "kind": kind} for k, label, kind in METRIC_ROWS],
-        "annual": _table(a_cols, a_labels),
-        "quarterly": _table(q_cols, q_labels),
+        "op_margin": _div(r["op_income"], r["revenue"], 100),
+        "net_margin": _div(r["net_income"], r["revenue"], 100),
+        "roe": _div(roe_roa_ni, equity_pos, 100),
+        "roa": _div(roe_roa_ni, r["total_assets"], 100),
+        "debt_ratio": _div(r["total_liab"], equity_pos, 100),
+        "per": per,
+        "pbr": _div(market_cap, equity_pos),
+        "div_yield": _div(dps, _pos(price), 100),
+        "payout": payout,
     }
+
+
+def _ttm(rows, i, key):
+    """rows[i]를 끝으로 하는 연속된 4개 분기 합. 중간에 빠진 분기가 있거나 값이 비면 None."""
+    if i < 3:
+        return None
+    window = rows[i - 3 : i + 1]
+    span = (pd.Timestamp(window[-1]["date"]) - pd.Timestamp(window[0]["date"])).days
+    if not 250 <= span <= 300:  # 분기말 4개가 연속이면 약 273일
+        return None
+    vals = [w[key] for w in window]
+    if any(_nan(v) for v in vals):
+        return None
+    return float(sum(vals))
+
+
+def _annual_table(rows):
+    cols = []
+    for r in rows:
+        cols.append({**{k: r[k] for k in AMOUNT_KEYS}, **_ratios(r, r["net_income"], r["div_paid"], r["net_income"])})
+    labels = [f"{r['date'][:4]}.{r['date'][5:7]}" for r in rows]
+    return cols, labels
+
+
+def _quarterly_table(rows):
+    cols = []
+    for i, r in enumerate(rows):
+        annualized = r["net_income"] * 4 if not _nan(r["net_income"]) else None
+        ratios = _ratios(r, _ttm(rows, i, "net_income"), _ttm(rows, i, "div_paid"), annualized)
+        cols.append({**{k: r[k] for k in AMOUNT_KEYS}, **ratios})
+    labels = []
+    for r in rows:
+        d = pd.Timestamp(r["date"])
+        labels.append(f"{d.year}.{(d.month - 1) // 3 + 1}Q")
+    return cols[-QUARTERS:], labels[-QUARTERS:]
+
+
+def _table(cols, labels):
+    def clean(v):
+        return None if _nan(v) or math.isinf(v) else float(v)
+
+    return {"periods": labels, "rows": {k: [clean(c[k]) for c in cols] for k, _, _ in METRIC_ROWS}}
+
+
+# ---------- 진입점 ----------
+
+
+def _meta_key(ticker):
+    return f"fin_meta:{ticker}"
+
+
+def _load_meta(ticker):
+    raw = db.get_kv(_meta_key(ticker))
+    try:
+        return json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+
+
+def _expired(meta, field, ttl, now):
+    at = meta.get(field)
+    return at is None or now - datetime.fromisoformat(at) > ttl
 
 
 def get_financials(ticker_symbol, force_refresh=False):
     """Returns: (payload dict, source) — source는 "cache" | "fetched" | "cache(stale)"."""
     ticker_symbol = ticker_symbol.strip().upper()
-    key = f"financials:{ticker_symbol}"
     now = datetime.now(timezone.utc)
+    meta = _load_meta(ticker_symbol)
+    outdated = meta.get("version", 0) < FIN_SCHEMA_VERSION
 
-    cached = None
-    raw = db.get_kv(key)
-    if raw:
+    need_annual = force_refresh or outdated or _expired(meta, "annual_at", ANNUAL_TTL, now)
+    need_quarterly = force_refresh or outdated or _expired(meta, "quarterly_at", QUARTERLY_TTL, now)
+
+    source = "cache"
+    if need_annual or need_quarterly:
         try:
-            cached = json.loads(raw)
-        except ValueError:
-            cached = None
+            currency = _fetch_and_store(ticker_symbol, need_annual, need_quarterly, now.isoformat())
+            if need_annual:
+                meta["annual_at"] = now.isoformat()
+            if need_quarterly:
+                meta["quarterly_at"] = now.isoformat()
+            meta["currency"] = currency or meta.get("currency")
+            meta["version"] = FIN_SCHEMA_VERSION
+            db.set_kv(_meta_key(ticker_symbol), json.dumps(meta))
+            source = "fetched"
+        except Exception:
+            if not db.fetch_fin_snapshots(ticker_symbol, "annual"):
+                raise
+            source = "cache(stale)"  # Yahoo 조회 실패 -> 쌓여 있는 값으로 폴백
 
-    if cached and not force_refresh and cached.get("payload", {}).get("version") == CACHE_VERSION:
-        fetched_at = datetime.fromisoformat(cached["fetched_at"])
-        if now - fetched_at <= FIN_TTL:
-            return cached["payload"], "cache"
+    annual = _table(*_annual_table(db.fetch_fin_snapshots(ticker_symbol, "annual")))
+    quarterly = _table(*_quarterly_table(db.fetch_fin_snapshots(ticker_symbol, "quarterly")))
 
-    try:
-        payload = _build(ticker_symbol)
-    except Exception:
-        if cached and cached.get("payload"):
-            return cached["payload"], "cache(stale)"
-        raise
-
-    db.set_kv(key, json.dumps({"fetched_at": now.isoformat(), "payload": payload}))
-    return payload, "fetched"
+    payload = {
+        "currency": meta.get("currency"),
+        "metrics": [{"key": k, "label": label, "kind": kind} for k, label, kind in METRIC_ROWS],
+        "annual": annual,
+        "quarterly": quarterly,
+    }
+    return payload, source
 
 
 if __name__ == "__main__":
@@ -356,10 +342,9 @@ if __name__ == "__main__":
     import tickers
 
     ticker, _ = tickers.resolve(sys.argv[1] if len(sys.argv) > 1 else "AAPL")
-    payload, source = get_financials(ticker, force_refresh=True)
+    payload, source = get_financials(ticker, force_refresh="--refresh" in sys.argv)
     print(ticker, payload["currency"], source)
+    pd.set_option("display.width", 200)
     for name in ("annual", "quarterly"):
         tbl = payload[name]
-        df = pd.DataFrame(tbl["rows"], index=tbl["periods"]).T
-        pd.set_option("display.width", 200)
-        print(df)
+        print(pd.DataFrame(tbl["rows"], index=tbl["periods"]).T)
