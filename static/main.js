@@ -32,7 +32,10 @@ if (!tooltipEl) {
 form.addEventListener("submit", (e) => {
   e.preventDefault();
   const ticker = input.value.trim();
-  if (ticker) loadTicker(ticker);
+  if (ticker) {
+    loadTicker(ticker);
+    loadFinancials(ticker);
+  }
 });
 
 async function loadTicker(ticker) {
@@ -57,6 +60,77 @@ async function loadTicker(ticker) {
   } catch (err) {
     setStatus(err.message, true);
   }
+}
+
+// ---------- 재무제표 표 (연도별 / 최근 5개 분기) ----------
+
+const finSection = document.getElementById("fin-section");
+const finStatusEl = document.getElementById("fin-status");
+let finRequestId = 0;
+
+async function loadFinancials(ticker) {
+  const reqId = ++finRequestId; // 빠르게 연속 조회할 때 늦게 온 이전 응답이 덮어쓰지 않도록
+  finSection.hidden = true;
+  setFinStatus("재무제표를 불러오는 중...", false);
+  try {
+    const res = await fetch(`/api/financials/${encodeURIComponent(ticker)}`);
+    const data = await res.json();
+    if (reqId !== finRequestId) return;
+    if (!res.ok) throw new Error(data.error || "재무제표를 불러오지 못했습니다.");
+
+    const unit = amountUnit(data.currency);
+    document.getElementById("fin-unit-annual").textContent = `(단위: ${unit.label})`;
+    document.getElementById("fin-unit-quarterly").textContent = `(단위: ${unit.label})`;
+    renderFinTable(document.getElementById("fin-annual"), data.metrics, data.annual, unit);
+    renderFinTable(document.getElementById("fin-quarterly"), data.metrics, data.quarterly, unit);
+    setFinStatus("", false);
+    finSection.hidden = false;
+  } catch (err) {
+    if (reqId !== finRequestId) return;
+    setFinStatus(err.message, true);
+  }
+}
+
+function setFinStatus(message, isError) {
+  finStatusEl.hidden = !message;
+  finStatusEl.textContent = message;
+  finStatusEl.className = "status" + (isError ? " error" : "");
+}
+
+// 원화는 억원, 나머지 통화는 백만 단위로 표시
+function amountUnit(currency) {
+  if (currency === "KRW") return { div: 1e8, label: "억원", digits: 0 };
+  if (currency === "JPY") return { div: 1e8, label: "억엔", digits: 0 };
+  return { div: 1e6, label: `${currency || ""} 백만`.trim(), digits: 0 };
+}
+
+const numFmt = (digits) =>
+  new Intl.NumberFormat("ko-KR", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+
+function formatFinCell(v, kind, unit) {
+  if (v === null || v === undefined) return "-";
+  if (kind === "amount") return numFmt(unit.digits).format(v / unit.div);
+  if (kind === "pct") return numFmt(1).format(v) + "%";
+  return numFmt(1).format(v) + "배";
+}
+
+function renderFinTable(table, metrics, tbl, unit) {
+  if (!tbl.periods.length) {
+    table.innerHTML = `<tbody><tr><td>표시할 데이터가 없습니다</td></tr></tbody>`;
+    return;
+  }
+  const thead = `<thead><tr><th>항목</th>${tbl.periods.map((p) => `<th>${p}</th>`).join("")}</tr></thead>`;
+  const body = metrics
+    .map((m) => {
+      const cells = tbl.rows[m.key].map((v) => {
+        const neg = v !== null && v !== undefined && v < 0 ? ' class="neg"' : "";
+        return `<td${neg}>${formatFinCell(v, m.kind, unit)}</td>`;
+      });
+      const groupStart = m.key === "op_margin" ? ' class="group-start"' : "";
+      return `<tr${groupStart}><th scope="row">${m.label}</th>${cells.join("")}</tr>`;
+    })
+    .join("");
+  table.innerHTML = thead + `<tbody>${body}</tbody>`;
 }
 
 const CACHE_LABEL = {

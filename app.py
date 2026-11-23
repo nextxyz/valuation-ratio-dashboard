@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, make_response, render_template, request, url_for
 
 import db
+import financials
 import prices
 import tickers
 from ratios import METRICS, get_ratio_history
@@ -127,6 +128,18 @@ def api_ratios(ticker):
         "cache_info": cache_info,
     }
     return jsonify(payload)
+
+
+@app.route("/api/financials/<path:ticker>")
+def api_financials(ticker):
+    """연도별(가장 오래된 회계연도부터) + 최근 5개 분기 재무제표 요약."""
+    try:
+        yf_ticker, _ = tickers.resolve(ticker)
+        payload, source = financials.get_financials(yf_ticker)
+    except Exception as e:
+        return jsonify({"error": f"재무제표를 불러오지 못했습니다: {e}"}), 400
+
+    return jsonify({**payload, "ticker": yf_ticker, "source": source})
 
 
 @app.route("/api/compare")

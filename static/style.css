@@ -351,6 +351,44 @@ th {
   background: var(--surface-alt);
 }
 
+/* ---------- 재무제표 표 ---------- */
+
+.unit-note {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
+  margin-left: 6px;
+}
+
+.fin-table {
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.fin-table tbody th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-primary);
+  background: var(--surface-alt);
+  position: sticky;
+  left: 0;
+}
+
+.fin-table tr.group-start > * {
+  border-top: 2px solid var(--border);
+}
+
+.fin-table td.neg {
+  color: var(--danger);
+}
+
+.table-footnote {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 8px 2px 0;
+  line-height: 1.5;
+}
+
 /* ---------- 탭 2: 수익률 비교 차트 ---------- */
 
 .chart-card-wide {
