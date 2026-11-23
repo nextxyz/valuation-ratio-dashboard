@@ -83,6 +83,9 @@ async function loadFinancials(ticker) {
     document.getElementById("fin-unit-quarterly").textContent = `(단위: ${unit.label})`;
     renderFinTable(document.getElementById("fin-annual"), data.metrics, data.annual, unit);
     renderFinTable(document.getElementById("fin-quarterly"), data.metrics, data.quarterly, unit);
+    document.getElementById("fin-source").textContent = data.data_source
+      ? `출처: ${data.data_source} 재무제표${data.data_source.startsWith("OpenDART") ? " (최근 10년)" : ""}`
+      : "";
     setFinStatus("", false);
     finSection.hidden = false;
   } catch (err) {

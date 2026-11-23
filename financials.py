@@ -1,7 +1,10 @@
 """
-재무제표 요약표: 연도별(DB에 쌓인 가장 오래된 회계연도부터) + 최근 5개 분기.
+재무제표 요약표: 연도별 + 최근 5개 분기.
 
-저장 방식 (db.fin_snapshots):
+- 한국 상장사(000000.KS / .KQ): OpenDART에서 받아 최근 10년 + 최근 5개 분기만 캐시한다(dart.py).
+- 그 외(해외 티커): OpenDART에 없으므로 아래의 yfinance 방식을 그대로 쓴다.
+
+yfinance 저장 방식 (db.fin_snapshots):
 - 원본 수치(매출·이익·잔액·현금흐름, 결산일 주가·주당배당금)만 (ticker, period, date) 단위로
   upsert하고 지우지 않는다. 비율(ROE, PER 등)은 읽을 때마다 원본으로부터 다시 계산한다.
 - yfinance는 연간 4~5년, 분기 6~7개 분기만 주지만, 조회가 반복될수록 새 기간이 추가되고
@@ -21,13 +24,17 @@
 
 import json
 import math
+import re
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
 
+import dart
 import db
+
+_KR_TICKER_RE = re.compile(r"^([0-9A-Z]{6})\.(KS|KQ)$")
 
 ANNUAL_TTL = timedelta(days=30)
 QUARTERLY_TTL = timedelta(hours=24)
@@ -297,9 +304,40 @@ def _expired(meta, field, ttl, now):
     return at is None or now - datetime.fromisoformat(at) > ttl
 
 
+def _dart_table(rows, labels, quarterly):
+    cols = []
+    for r in rows:
+        roe_roa_ni = r["net_income"] * 4 if quarterly and not _nan(r["net_income"]) else r["net_income"]
+        ratios = _ratios(r, r["ni_ttm"], r["div_ttm"], roe_roa_ni)
+        # 배당수익률 = (연간 또는 TTM) 배당금 지급액 / 기말 시가총액
+        market_cap = r["price"] * r["shares"] if not _nan(r["price"]) and not _nan(r["shares"]) else None
+        ratios["div_yield"] = _div(r["div_ttm"], _pos(market_cap), 100)
+        cols.append({**{k: r[k] for k in AMOUNT_KEYS}, **ratios})
+    return _table(cols, labels)
+
+
+def _get_dart_financials(stock_code, ticker_symbol, force_refresh):
+    annual, quarterly, source, fs_div = dart.get_tables(stock_code, ticker_symbol, force=force_refresh)
+    a_labels = [f"{r['date'][:4]}.{r['date'][5:7]}" for r in annual]
+    q_labels = [f"{r['date'][:4]}.{(int(r['date'][5:7]) - 1) // 3 + 1}Q" for r in quarterly]
+    # 예전 yfinance 방식으로 쌓아둔 이 종목의 재무제표 행은 더 이상 쓰지 않으므로 정리
+    db.delete_fin_snapshots(ticker_symbol)
+    payload = {
+        "currency": "KRW",
+        "data_source": "OpenDART " + ("연결" if fs_div == "CFS" else "별도"),
+        "metrics": [{"key": k, "label": label, "kind": kind} for k, label, kind in METRIC_ROWS],
+        "annual": _dart_table(annual, a_labels, quarterly=False),
+        "quarterly": _dart_table(quarterly, q_labels, quarterly=True),
+    }
+    return payload, source
+
+
 def get_financials(ticker_symbol, force_refresh=False):
     """Returns: (payload dict, source) — source는 "cache" | "fetched" | "cache(stale)"."""
     ticker_symbol = ticker_symbol.strip().upper()
+    m = _KR_TICKER_RE.match(ticker_symbol)
+    if m:
+        return _get_dart_financials(m.group(1), ticker_symbol, force_refresh)
     now = datetime.now(timezone.utc)
     meta = _load_meta(ticker_symbol)
     outdated = meta.get("version", 0) < FIN_SCHEMA_VERSION
@@ -329,6 +367,7 @@ def get_financials(ticker_symbol, force_refresh=False):
 
     payload = {
         "currency": meta.get("currency"),
+        "data_source": "Yahoo Finance",
         "metrics": [{"key": k, "label": label, "kind": kind} for k, label, kind in METRIC_ROWS],
         "annual": annual,
         "quarterly": quarterly,

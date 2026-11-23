@@ -105,6 +105,30 @@ def init_db():
                 conn.commit()
             except sqlite3.OperationalError:
                 pass
+        # OpenDART 고유번호 <-> 6자리 종목코드 (상장사만)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS dart_corp (
+                corp_code TEXT PRIMARY KEY,
+                stock_code TEXT NOT NULL,
+                corp_name TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dart_corp_stock ON dart_corp(stock_code)")
+        # OpenDART 정기보고서 캐시. 보고서 하나(결산일 하나)가 한 행이고, data는 추출한 원본 수치 JSON.
+        # 표에 필요한 기간(최근 10년 + 최근 분기)만 남기고 나머지는 지운다(dart.prune_dart_reports).
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS dart_reports (
+                corp_code TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('annual', 'q1', 'h1', 'q3')),
+                fy INTEGER NOT NULL,
+                rcept_no TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('ok', 'nodata')),
+                data TEXT,
+                fetched_at TEXT NOT NULL,
+                PRIMARY KEY (corp_code, period_end)
+            )
+        """)
         # 예전 방식(계산 결과 JSON 통째 캐시)의 잔여 항목 정리
         conn.execute("DELETE FROM kv_meta WHERE key LIKE 'financials:%'")
         # 방문 집계. day는 KST 기준 날짜(YYYY-MM-DD), visitor는 쿠키에 심은 랜덤 ID.
@@ -331,6 +355,86 @@ def fetch_fin_snapshots(ticker, period):
             (ticker, period),
         ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def delete_fin_snapshots(ticker):
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM fin_snapshots WHERE ticker = ?", (ticker,))
+        conn.execute("DELETE FROM kv_meta WHERE key = ?", (f"fin_meta:{ticker}",))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def replace_dart_corps(rows, fetched_at):
+    """rows: [(corp_code, stock_code, corp_name), ...] 전체 교체."""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM dart_corp")
+        conn.executemany("INSERT OR REPLACE INTO dart_corp (corp_code, stock_code, corp_name) VALUES (?, ?, ?)", rows)
+        conn.execute(
+            "INSERT INTO kv_meta (key, value) VALUES ('dart_corp_fetched_at', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (fetched_at,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def find_dart_corp(stock_code):
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT corp_code FROM dart_corp WHERE stock_code = ?", (stock_code,)).fetchone()
+        return row["corp_code"] if row else None
+    finally:
+        conn.close()
+
+
+def fetch_dart_reports(corp_code):
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM dart_reports WHERE corp_code = ? ORDER BY period_end", (corp_code,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def upsert_dart_reports(corp_code, rows):
+    """rows: [(period_end, kind, fy, rcept_no, status, data_json, fetched_at), ...] 같은 기간은 덮어쓴다."""
+    conn = get_connection()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO dart_reports (corp_code, period_end, kind, fy, rcept_no, status, data, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(corp_code, period_end) DO UPDATE SET
+                kind = excluded.kind, fy = excluded.fy, rcept_no = excluded.rcept_no,
+                status = excluded.status, data = excluded.data, fetched_at = excluded.fetched_at
+            """,
+            [(corp_code, *r) for r in rows],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def prune_dart_reports(corp_code, keep_period_ends):
+    """keep_period_ends에 없는 보고서 행을 지운다."""
+    conn = get_connection()
+    try:
+        keep = list(keep_period_ends)
+        placeholders = ", ".join("?" for _ in keep) or "''"
+        conn.execute(
+            f"DELETE FROM dart_reports WHERE corp_code = ? AND period_end NOT IN ({placeholders})",
+            (corp_code, *keep),
+        )
+        conn.commit()
     finally:
         conn.close()
 
