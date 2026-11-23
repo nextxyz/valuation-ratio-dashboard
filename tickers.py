@@ -4,6 +4,7 @@
   주식 목록(StockListing("KRX"))에는 ETF가 없으므로 ETF 목록(StockListing("ETF/KR"))도 함께 받는다.
 - 목록은 LISTING_TTL 동안 유효한 것으로 보고, 그 안에는 네트워크 호출을 하지 않는다.
 - yfinance 티커 접미사: 코스피/ETF=.KS, 코스닥/코스닥글로벌/코넥스=.KQ
+- '이름.KS'/'이름.KQ'로 입력하면 영문 이름이어도 한국 상장 목록에서 찾는다(예: NC.KS -> NC(엔씨소프트) 036570.KS)
 """
 
 import re
@@ -116,10 +117,32 @@ def _guess_suffix(code):
     return best
 
 
+_KR_SUFFIX_RE = re.compile(r"^(.+)\.(KS|KQ)$", re.I)
+
+
+def _resolve_kr_name(name, suffix, query):
+    """KRX 상장 목록에서 이름으로 찾는다. 같은 이름이 양쪽 시장에 있으면 접미사가 가리키는 시장을
+    우선하고, 접미사와 실제 시장이 다르면(예: 코스피 종목에 .KQ) 실제 시장의 접미사로 바로잡는다."""
+    ensure_listing()
+    norm = _normalize(name)
+    matches = db.find_stock_by_name(norm)
+    if not matches:
+        candidates = db.search_stock_by_name(norm)
+        if not candidates:
+            raise ValueError(f"'{query}'에 해당하는 한국 상장 종목을 찾을 수 없습니다.")
+        hint = ", ".join(f"{c['name']}({c['code']})" for c in candidates)
+        raise ValueError(f"'{query}'와 정확히 일치하는 한국 상장 종목이 없습니다. 혹시: {hint}")
+    preferred = [x for x in matches if _suffix(x["market"]) == "." + suffix]
+    m = (preferred or matches)[0]
+    return to_yf_ticker(m["code"], m["market"]), f"{m['name']} ({m['code']})"
+
+
 def resolve(query):
     """입력을 (yf_ticker, display) 로 변환.
 
     - 한글명   : 정확 일치하는 종목의 코드+접미사로 변환. 없으면 후보를 담은 ValueError.
+    - 이름.KS / 이름.KQ: 한국 상장 목록에서 이름으로 찾는다(예: NC.KS -> 036570.KS).
+                 영문 이름의 한국 종목이 같은 이름의 미국 티커와 겹칠 때 쓴다.
     - 6자리코드: 상장 목록에서 시장을 찾아 접미사를 붙인다.
                  목록에 없으면 .KS/.KQ 중 시세가 있는 쪽으로 추정하고, 둘 다 없으면 그대로.
     - 그 외    : 그대로 대문자화(영문 티커, 이미 .KS/.KQ가 붙은 코드 등).
@@ -129,6 +152,12 @@ def resolve(query):
     q = (query or "").strip()
     if not q:
         raise ValueError("티커 또는 종목명을 입력하세요.")
+
+    # 종목명 + 한국 시장 접미사 (예: NC.KS, naver.ks, 삼성전자.KS).
+    # 접미사 없이 "NC"만 치면 미국 티커로 가므로, 한국 종목명을 원할 때 이렇게 구분한다.
+    m = _KR_SUFFIX_RE.match(q)
+    if m and not _CODE_RE.match(m.group(1).strip()):
+        return _resolve_kr_name(m.group(1).strip(), m.group(2).upper(), query)
 
     if has_hangul(q):
         ensure_listing()
